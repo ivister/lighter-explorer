@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Lighter Perps Dashboard</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Lighter Perps Dashboard</h1>
+  </header>
+
+  <main>
+    <!-- L1 address form -->
+    <section class="card">
+      <form id="address-form">
+        <label for="l1-input">L1 Address</label>
+        <div class="form-row">
+          <input
+            id="l1-input"
+            type="text"
+            placeholder="0x..."
+            spellcheck="false"
+            autocomplete="off"
+            list="l1-history"
+          />
+          <datalist id="l1-history"></datalist>
+          <button type="submit">Load Accounts</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- Main account card -->
+    <section id="main-account" class="card hidden">
+      <h2>Main Account <span class="badge badge-type">type 0</span></h2>
+      <div class="account-grid">
+        <div class="field"><span class="label">Index</span><span id="ma-index" class="value mono">—</span></div>
+        <div class="field"><span class="label">Status</span><span id="ma-status" class="value">—</span></div>
+        <div class="field"><span class="label">Collateral</span><span id="ma-collateral" class="value">—</span></div>
+        <div class="field"><span class="label">Available Balance</span><span id="ma-balance" class="value">—</span></div>
+        <div class="field"><span class="label">Trading Mode</span><span id="ma-mode" class="value">—</span></div>
+        <div class="field"><span class="label">Total Orders</span><span id="ma-orders" class="value">—</span></div>
+        <div class="field"><span class="label">Pending Orders</span><span id="ma-pending" class="value">—</span></div>
+        <div class="field"><span class="label">Subs In Position</span><span id="ma-active-subs" class="value">—</span></div>
+        <div class="field"><span class="label">L1 Address</span><span id="ma-l1" class="value mono">—</span></div>
+      </div>
+    </section>
+
+    <!-- Sub-accounts table -->
+    <section id="sub-accounts" class="card hidden">
+      <div class="section-header">
+        <h2>Sub-Accounts <span id="sub-count" class="count-badge"></span></h2>
+        <div class="filters">
+          <input id="sub-search" type="text" placeholder="Search by index..." />
+          <div class="checkbox-group">
+            <label class="checkbox-label">
+              <input type="checkbox" id="filter-balance" /> With balance
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="filter-activated" /> In position
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="filter-zero-pos" /> Show zero positions
+            </label>
+          </div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th class="sortable" data-key="index">Index</th>
+              <th class="sortable" data-key="status">Status</th>
+              <th class="sortable" data-key="collateral">Collateral</th>
+              <th class="sortable" data-key="available_balance">Available Balance</th>
+              <th class="sortable" data-key="account_trading_mode">Trading Mode</th>
+              <th class="sortable" data-key="total_order_count">Total Orders</th>
+              <th class="sortable" data-key="pending_order_count">Pending</th>
+            </tr>
+          </thead>
+          <tbody id="sub-tbody"></tbody>
+        </table>
+      </div>
+      <p id="no-results" class="hidden">No sub-accounts match your search.</p>
+    </section>
+
+    <!-- Loading / error states -->
+    <div id="loading" class="hidden"><div class="spinner"></div>Loading accounts...</div>
+    <div id="error" class="hidden"></div>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
