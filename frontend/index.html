@@ -82,6 +82,7 @@
               <input type="checkbox" id="filter-zero-pos" /> Show zero positions
             </label>
           </div>
+          <button type="button" id="btn-export-csv" class="btn-export" title="Export all accounts to CSV">&#x2913; CSV</button>
         </div>
       </div>
       <div class="table-wrap">
@@ -106,6 +107,24 @@
     <div id="loading" class="hidden"><div class="spinner"></div>Loading...</div>
     <div id="error" class="hidden"></div>
   </main>
+
+  <!-- Export CSV modal -->
+  <div id="export-modal" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>Export CSV</h3>
+      <div class="modal-buttons">
+        <button id="export-all" class="modal-btn">
+          <span class="modal-btn-icon">&#x2913;</span>
+          <span id="export-all-label">All accounts</span>
+        </button>
+        <button id="export-filtered" class="modal-btn">
+          <span class="modal-btn-icon">&#x2913;</span>
+          <span id="export-filtered-label">With current filters</span>
+        </button>
+      </div>
+      <button id="export-cancel" class="modal-cancel">Cancel</button>
+    </div>
+  </div>
 
   <div id="toast-container"></div>
 
