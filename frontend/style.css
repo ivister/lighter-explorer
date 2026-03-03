@@ -524,6 +524,42 @@ tr.detail-row > td {
   cursor: help;
 }
 
+/* ── Copyable index ────────────────────────────────────── */
+
+.copyable {
+  cursor: pointer;
+  position: relative;
+  transition: color 0.15s;
+}
+
+.copyable:hover {
+  color: var(--accent);
+}
+
+.copy-toast {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--surface);
+  color: var(--green);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: copy-fade 1.2s ease-out forwards;
+  z-index: 200;
+}
+
+@keyframes copy-fade {
+  0%   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  70%  { opacity: 1; transform: translateX(-50%) translateY(-4px); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+}
+
 /* ── Utility ────────────────────────────────────────────── */
 
 .hidden {

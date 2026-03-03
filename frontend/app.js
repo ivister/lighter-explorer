@@ -136,6 +136,18 @@
     document.getElementById(id).innerHTML = html;
   }
 
+  // ── Copy to clipboard with inline tooltip ────────────
+  function copyIndex(value, el) {
+    navigator.clipboard.writeText(String(value)).then(function () {
+      var tip = document.createElement("span");
+      tip.className = "copy-toast";
+      tip.textContent = "Copied!";
+      el.style.position = "relative";
+      el.appendChild(tip);
+      tip.addEventListener("animationend", function () { tip.remove(); });
+    });
+  }
+
   function signLabel(sign) {
     if (sign === 1) return '<span class="badge badge-long">Long</span>';
     if (sign === -1) return '<span class="badge badge-short">Short</span>';
@@ -178,7 +190,7 @@
     // Determine main account positions
     var mainRealPos = (acc.positions || []).filter((p) => parseFloat(p.position_value) !== 0);
     acc._hasPositions = mainRealPos.length > 0;
-    setField("ma-index", acc.index);
+    setField("ma-index", '<span class="copyable" data-copy="' + acc.index + '" title="Click to copy">' + acc.index + '</span>');
     setField("ma-status", accountStatusBadge(acc, true) + onlineBadge(acc));
     setField("ma-total-asset", formatNumber(acc.total_asset_value, 6));
     setField("ma-collateral", formatValue(acc.collateral));
@@ -274,6 +286,14 @@
     positionsHtml;
   }
 
+  // ── Click-to-copy delegation on main account index ─────
+
+  document.getElementById("ma-index").addEventListener("click", function (e) {
+    var copyEl = e.target.closest(".copyable");
+    if (!copyEl) return;
+    copyIndex(copyEl.dataset.copy, copyEl);
+  });
+
   // ── Render detail panel for expanded sub-account ────────
 
   function renderDetailRow(detail, colSpan, index) {
@@ -295,12 +315,20 @@
     var typeLabel = acc.account_type === 0 ? 'Main' : 'Sub';
     var skipCheck = acc.account_type === 0;
     document.getElementById("sa-header").innerHTML =
-      'Account #' + acc.index + ' ' +
+      'Account <span class="copyable" data-copy="' + acc.index + '" title="Click to copy">#' + acc.index + '</span> ' +
       '<span class="badge badge-type">' + typeLabel + '</span> ' +
       accountStatusBadge(acc, skipCheck) + onlineBadge(acc);
     document.getElementById("sa-content").innerHTML = renderAccountContent(acc, skipCheck);
     show(singleAccountSection);
   }
+
+  // ── Click-to-copy on single account header ─────────────
+
+  document.getElementById("sa-header").addEventListener("click", function (e) {
+    var copyEl = e.target.closest(".copyable");
+    if (!copyEl) return;
+    copyIndex(copyEl.dataset.copy, copyEl);
+  });
 
   // ── Collapse helpers ────────────────────────────────────
 
@@ -323,7 +351,7 @@
 
   function renderSubRow(acc) {
     return '<tr class="sub-row" data-index="' + acc.index + '">' +
-      '<td class="mono">' + acc.index + '</td>' +
+      '<td class="mono"><span class="copyable" data-copy="' + acc.index + '" title="Click to copy">' + acc.index + '</span></td>' +
       '<td>' + accountStatusBadge(acc) + onlineBadge(acc) + '</td>' +
       '<td>' + formatNumber(acc.total_asset_value, 6) + '</td>' +
       '<td>' + tradingMode(acc.account_trading_mode) + '</td>' +
@@ -348,6 +376,14 @@
   subTbody.addEventListener("click", async (e) => {
     // Ignore clicks inside detail panel — only collapse via sub-row click
     if (e.target.closest(".detail-row")) return;
+
+    // Click-to-copy on index
+    var copyEl = e.target.closest(".copyable");
+    if (copyEl) {
+      e.stopPropagation();
+      copyIndex(copyEl.dataset.copy, copyEl);
+      return;
+    }
 
     const row = e.target.closest("tr.sub-row");
     if (!row) return;
