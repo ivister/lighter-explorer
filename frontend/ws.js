@@ -156,16 +156,10 @@
 
   // ── Expose ──────────────────────────────────────────────
 
-  // Re-send subscribe for a channel (poll for fresh data)
-  function refresh(channel) {
-    if (connected) sendSubscribe(channel);
-  }
-
   window.LighterWS = {
     init: init,
     subscribe: subscribe,
     unsubscribe: unsubscribe,
-    refresh: refresh,
     onStatusChange: onStatusChange,
     destroy: destroy,
   };

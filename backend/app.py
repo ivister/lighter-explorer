@@ -32,19 +32,6 @@ async def get_config():
 
 # ── Lighter proxy endpoints ──────────────────────────────────────────
 
-@app.get("/api/accounts")
-async def get_accounts_by_l1(l1_address: str = Query(..., description="Ethereum L1 address")):
-    """Return all accounts with full detail (positions, balances) for an L1 address."""
-    resp = await http_client.get(
-        "/api/v1/account",
-        params={"by": "l1_address", "value": l1_address},
-    )
-    if resp.status_code != 200:
-        msg = _lighter_error(resp)
-        raise HTTPException(status_code=resp.status_code, detail=msg)
-    return resp.json()
-
-
 @app.get("/api/account")
 async def get_account_detail(
     by: str = Query("index", description="'index' or 'l1_address'"),

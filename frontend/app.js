@@ -1,59 +1,61 @@
 (() => {
+  "use strict";
+
   // ── DOM references ──────────────────────────────────────
   const $ = (id) => document.getElementById(id);
 
-  const form         = $("address-form");
-  const input        = $("l1-input");
-  const mainSection  = $("main-account");
-  const subSection   = $("sub-accounts");
-  const subTbody     = $("sub-tbody");
-  const subSearch    = $("sub-search");
-  const subCount     = $("sub-count");
-  const filterBalance   = $("filter-balance");
-  const filterActivated = $("filter-activated");
-  const filterZeroPos   = $("filter-zero-pos");
-  const noResults    = $("no-results");
-  const loadingEl    = $("loading");
-  const errorEl      = $("error");
-  const toastContainer  = $("toast-container");
-  const singleSection   = $("single-account");
-  const saHeader     = $("sa-header");
-  const saContent    = $("sa-content");
-  const appTitle     = $("app-title");
-  const exportModal  = $("export-modal");
-  const wsDot        = $("ws-dot");
-  const wsStatusText = $("ws-status-text");
-  const blockHeight  = $("block-height");
-  const blockChip    = $("block-chip");
+  const form             = $("address-form");
+  const input            = $("l1-input");
+  const mainSection      = $("main-account");
+  const subSection       = $("sub-accounts");
+  const subTbody         = $("sub-tbody");
+  const subSearch        = $("sub-search");
+  const subCount         = $("sub-count");
+  const filterBalance    = $("filter-balance");
+  const filterActivated  = $("filter-activated");
+  const filterZeroPos    = $("filter-zero-pos");
+  const noResults        = $("no-results");
+  const loadingEl        = $("loading");
+  const errorEl          = $("error");
+  const toastContainer   = $("toast-container");
+  const singleSection    = $("single-account");
+  const saHeader         = $("sa-header");
+  const saContent        = $("sa-content");
+  const appTitle         = $("app-title");
+  const exportModal      = $("export-modal");
+  const wsDot            = $("ws-dot");
+  const wsStatusText     = $("ws-status-text");
+  const blockHeight      = $("block-height");
+  const blockChip        = $("block-chip");
+  const exportAllLabel   = $("export-all-label");
+  const exportFilteredBtn   = $("export-filtered");
+  const exportFilteredLabel = $("export-filtered-label");
+
+  const WS = window.LighterWS;
 
   // ── State ───────────────────────────────────────────────
-  let allSubAccounts  = [];
-  let expandedIndexes = new Set();
-  let expandedColSpan = 6;
-  let sortKey         = "_accountStatus";
-  let sortAsc         = false;
+  let allSubAccounts    = [];
+  let expandedIndexes   = new Set();
+  let expandedColSpan   = 6;
+  let sortKey           = "_accountStatus";
+  let sortAsc           = false;
 
-  let marketData      = {};
+  let marketData        = {};
   let marketRenderTimer = null;
   let marketDataReceived = false;
 
-  let mainAccountObj  = null;
+  let mainAccountObj    = null;
   let singleAccountData = null;
 
-  // WS polling (request/response, not streaming)
-  let masterTrackId   = null;
-  let singleTrackId   = null;
-  let trackedSubs     = {};   // { index: timerId }
-  let masterPollTimer = null;
-  let singlePollTimer = null;
-  const POLL_INTERVAL = 5000;
+  let masterTrackId     = null;
+  let singleTrackId     = null;
+  let trackedSubs       = {};  // { index: true }
 
-  // ── Helpers ─────────────────────────────────────────────
+  // ── Pure helpers ──────────────────────────────────────────
 
-  function show(el) { el.classList.remove("hidden"); }
-  function hide(el) { el.classList.add("hidden"); }
-
-  function setField(id, html) { $(id).innerHTML = html; }
+  const show = (el) => el.classList.remove("hidden");
+  const hide = (el) => el.classList.add("hidden");
+  const setField = (id, html) => { $(id).innerHTML = html; };
 
   function formatValue(val) {
     return (!val || val === "") ? "—" : val;
@@ -61,8 +63,8 @@
 
   function formatNumber(val, decimals) {
     if (val === undefined || val === null || val === "") return "—";
-    var n = parseFloat(val);
-    return isNaN(n) ? val : n.toFixed(decimals);
+    const n = parseFloat(val);
+    return isNaN(n) ? String(val) : n.toFixed(decimals);
   }
 
   function tradingMode(mode) {
@@ -75,24 +77,24 @@
 
   function hasRealPositions(positions) {
     if (!positions || !positions.length) return false;
-    return positions.some(function (p) { return parseFloat(p.position_value) !== 0; });
+    return positions.some((p) => parseFloat(p.position_value) !== 0);
   }
 
   function pnlClass(val) {
     return val === 0 ? "pnl-zero" : val > 0 ? "pnl-positive" : "pnl-negative";
   }
 
-  // ── Account status ────────────────────────────────────
+  // ── Account status helpers ─────────────────────────────
 
   function getAccountStatus(acc) {
-    var hasBal = hasBalance(acc);
+    const hasBal = hasBalance(acc);
     if (hasBal && acc._hasPositions) return "trading";
     if (hasBal) return "check";
     return "idle";
   }
 
   function accountStatusBadge(acc, skipCheck) {
-    var st = getAccountStatus(acc);
+    const st = getAccountStatus(acc);
     if (st === "trading")
       return '<span class="badge badge-trading" title="Has balance and open positions">Trading</span>';
     if (st === "check" && !skipCheck)
@@ -116,16 +118,15 @@
     return "—";
   }
 
-  // ── WS positions helpers ──────────────────────────────
+  // ── Data helpers: positions & stats ────────────────────
 
   function wsPositionsToArray(posObj) {
     if (!posObj || typeof posObj !== "object") return [];
-    var result = [];
-    var keys = Object.keys(posObj);
-    for (var i = 0; i < keys.length; i++) {
-      var val = posObj[keys[i]];
+    const result = [];
+    for (const key of Object.keys(posObj)) {
+      const val = posObj[key];
       if (Array.isArray(val)) {
-        for (var j = 0; j < val.length; j++) result.push(val[j]);
+        for (let j = 0; j < val.length; j++) result.push(val[j]);
       } else if (val && typeof val === "object") {
         result.push(val);
       }
@@ -133,95 +134,55 @@
     return result;
   }
 
-  // WS does not return liquidation_price — preserve from previous (REST) data
-  function mergePositions(newPositions, oldPositions) {
-    if (!oldPositions || !oldPositions.length) return newPositions;
-    var oldMap = {};
-    for (var i = 0; i < oldPositions.length; i++) {
-      var o = oldPositions[i];
-      oldMap[o.market_id || o.symbol] = o;
-    }
-    for (var j = 0; j < newPositions.length; j++) {
-      var p = newPositions[j];
-      if (!p.liquidation_price || p.liquidation_price === "" || p.liquidation_price === "0") {
-        var old = oldMap[p.market_id || p.symbol];
-        if (old && old.liquidation_price) p.liquidation_price = old.liquidation_price;
-      }
-    }
-    return newPositions;
+  function calcLiqPrice(p) {
+    const size = Math.abs(parseFloat(p.position));
+    const entry = parseFloat(p.avg_entry_price);
+    const margin = parseFloat(p.allocated_margin);
+    if (!size || !entry || !margin) return "";
+    return (p.sign === 1 ? entry - margin / size : entry + margin / size).toString();
   }
 
-  // Parse WS positions msg and merge into account object, returns true if positions changed
+  function fillLiqPrices(positions) {
+    for (const p of positions) {
+      if (!p.liquidation_price || p.liquidation_price === "" || p.liquidation_price === "0") {
+        p.liquidation_price = calcLiqPrice(p);
+      }
+    }
+  }
+
   function applyWsPositions(acc, msg) {
     if (!msg.positions) return false;
-    var posArr = wsPositionsToArray(msg.positions);
-    mergePositions(posArr, acc.positions);
+    const posArr = wsPositionsToArray(msg.positions);
+    fillLiqPrices(posArr);
     acc.positions = posArr;
     acc._hasPositions = hasRealPositions(posArr);
     return true;
   }
 
-  // ── Sub-row DOM helpers ───────────────────────────────
-
-  function getSubRow(index) {
-    return subTbody.querySelector('tr.sub-row[data-index="' + index + '"]');
+  function applyTradeStats(acc, msg) {
+    const keys = ["daily_trades_count", "daily_volume", "weekly_trades_count", "weekly_volume", "total_trades_count", "total_volume"];
+    for (const k of keys) {
+      if (msg[k] !== undefined) acc[k] = msg[k];
+    }
   }
 
-  function getDetailRow(index) {
-    return subTbody.querySelector('.detail-row[data-detail-for="' + index + '"]');
+  function applyUserStats(acc, s) {
+    if (s.portfolio_value !== undefined) acc.total_asset_value = s.portfolio_value;
+    if (s.collateral !== undefined) acc.collateral = s.collateral;
+    if (s.available_balance !== undefined) acc.available_balance = s.available_balance;
+    if (s.account_trading_mode !== undefined) acc.account_trading_mode = s.account_trading_mode;
+    if (s.leverage !== undefined) acc.leverage = s.leverage;
+    if (s.margin_usage !== undefined) acc.margin_usage = s.margin_usage;
+    if (s.cross_stats && s.cross_stats.portfolio_value !== undefined) {
+      acc.cross_asset_value = s.cross_stats.portfolio_value;
+    }
   }
-
-  function updateSubRowCells(index, sub) {
-    var row = getSubRow(index);
-    if (!row) return;
-    var statusCell = row.children[1];
-    if (statusCell) statusCell.innerHTML = statusHtml(sub);
-    var tavCell = row.children[2];
-    if (tavCell) tavCell.textContent = formatNumber(sub.total_asset_value, 6);
-  }
-
-  function reRenderDetail(index) {
-    if (!expandedIndexes.has(index)) return;
-    var sub = allSubAccounts.find(function (a) { return String(a.index) === index; });
-    if (!sub || !sub._cachedDetail) return;
-    var detailRow = getDetailRow(index);
-    if (detailRow) detailRow.outerHTML = renderDetailRow(sub._cachedDetail, expandedColSpan, index);
-  }
-
-  function reRenderAllExpanded() {
-    expandedIndexes.forEach(reRenderDetail);
-  }
-
-  // ── Click-to-copy ─────────────────────────────────────
-
-  function copyIndex(value, el) {
-    navigator.clipboard.writeText(String(value)).then(function () {
-      var tip = document.createElement("span");
-      tip.className = "copy-toast";
-      tip.textContent = "Copied!";
-      el.style.position = "relative";
-      el.appendChild(tip);
-      tip.addEventListener("animationend", function () { tip.remove(); });
-    });
-  }
-
-  function copyableHtml(value) {
-    return '<span class="copyable" data-copy="' + value + '" title="Click to copy">' + value + '</span>';
-  }
-
-  // Single delegated handler for all copyable elements
-  document.addEventListener("click", function (e) {
-    var copyEl = e.target.closest(".copyable");
-    if (!copyEl) return;
-    e.stopPropagation();
-    copyIndex(copyEl.dataset.copy, copyEl);
-  });
 
   // ── Toast notifications ───────────────────────────────
 
   function showToast(title, message, type) {
     type = type || "info";
-    var el = document.createElement("div");
+    const el = document.createElement("div");
     el.className = "toast toast-" + type;
     el.innerHTML =
       '<div class="toast-body">' +
@@ -230,24 +191,218 @@
       '</div>' +
       '<button class="toast-close">&times;</button>';
 
-    el.querySelector(".toast-close").addEventListener("click", function () { el.remove(); });
+    el.querySelector(".toast-close").addEventListener("click", () => el.remove());
     toastContainer.appendChild(el);
 
-    setTimeout(function () {
+    setTimeout(() => {
       el.classList.add("toast-out");
-      el.addEventListener("animationend", function () { el.remove(); });
+      el.addEventListener("animationend", () => el.remove());
     }, 8000);
 
     while (toastContainer.children.length > 5) toastContainer.firstChild.remove();
   }
 
-  // ── Render main account ───────────────────────────────
+  // ── Click-to-copy ─────────────────────────────────────
+
+  function copyIndex(value, el) {
+    navigator.clipboard.writeText(String(value)).then(() => {
+      const tip = document.createElement("span");
+      tip.className = "copy-toast";
+      tip.textContent = "Copied!";
+      el.style.position = "relative";
+      el.appendChild(tip);
+      tip.addEventListener("animationend", () => tip.remove());
+    });
+  }
+
+  function copyableHtml(value) {
+    return '<span class="copyable" data-copy="' + value + '" title="Click to copy">' + value + '</span>';
+  }
+
+  document.addEventListener("click", (e) => {
+    const copyEl = e.target.closest(".copyable");
+    if (!copyEl) return;
+    e.stopPropagation();
+    copyIndex(copyEl.dataset.copy, copyEl);
+  });
+
+  // ── Rendering: margin health bar ──────────────────────
+
+  function marginHealthBar(margin, upnl, cssClass) {
+    cssClass = cssClass || "";
+    const health = Math.max(0, Math.min(100, (margin + upnl) / margin * 100));
+    const barClass = health > 70 ? "margin-ok" : health > 30 ? "margin-warn" : "margin-danger";
+    return '<div class="margin-bar ' + cssClass + '"><div class="margin-fill ' + barClass + '" style="width:' + health.toFixed(1) + '%"></div></div>' +
+      '<span class="margin-pct ' + barClass + '">' + health.toFixed(0) + '%</span>';
+  }
+
+  function acctMarginBar(assetValue, totalMargin) {
+    if (totalMargin <= 0 || assetValue <= 0) return "";
+    const health = Math.max(0, Math.min(200, assetValue / totalMargin * 100));
+    const barClass = health > 150 ? "margin-ok" : health > 110 ? "margin-warn" : "margin-danger";
+    return '<div class="margin-bar margin-bar-lg"><div class="margin-fill ' + barClass + '" style="width:' + Math.min(health / 2, 100).toFixed(1) + '%"></div></div>' +
+      '<span class="margin-pct ' + barClass + '">' + health.toFixed(1) + '% margin ratio</span>';
+  }
+
+  // ── Rendering: single position row ────────────────────
+
+  function renderPositionRow(p, totals) {
+    const size = Math.abs(parseFloat(p.position));
+    const entry = parseFloat(p.avg_entry_price);
+    const margin = parseFloat(p.allocated_margin) || 0;
+
+    const mkt = marketData[p.symbol] || {};
+    const markPrice = mkt.mark_price || "—";
+    const mp = parseFloat(mkt.mark_price);
+
+    // Value = entry × size (static); notional = mark × size (for leverage)
+    const posValue = p.position_value;
+    let upnl;
+
+    if (mp && size && entry) {
+      upnl = p.sign === 1 ? (mp - entry) * size : (entry - mp) * size;
+      totals.hasLive = true;
+      totals.notional += mp * size;
+    } else {
+      upnl = parseFloat(p.unrealized_pnl) || 0;
+      totals.notional += parseFloat(posValue) || 0;
+    }
+    totals.upnl += upnl;
+    totals.margin += margin;
+
+    const rpnl = parseFloat(p.realized_pnl) || 0;
+
+    const leverage = parseFloat(p.initial_margin_fraction) > 0
+      ? Math.round(100 / parseFloat(p.initial_margin_fraction)) + "x"
+      : "—";
+
+    const isolatedBadge = p.margin_mode === 1
+      ? ' <span class="badge badge-isolated" title="Isolated margin · allocated ' + formatValue(p.allocated_margin) + '">Isolated</span>'
+      : '';
+
+    // ELP tooltip with formula
+    const liqRaw = p.liquidation_price;
+    const liqPrice = (!liqRaw || liqRaw === "0" || liqRaw === "") ? "—" : formatNumber(liqRaw, 6);
+    let liqTooltip = "Estimated Liquidation Price";
+    if (liqPrice !== "—" && margin > 0 && size && entry) {
+      const side = p.sign === 1 ? "Long" : "Short";
+      const op = p.sign === 1 ? "\u2212" : "+";
+      liqTooltip = "Estimated Liquidation Price\n" + side + ": entry " + op + " margin / size\n" +
+        formatNumber(entry, 6) + " " + op + " " + formatNumber(margin, 6) + " / " + formatNumber(size, 6);
+    }
+
+    // Margin cell with health bar
+    let marginHtml = formatNumber(p.allocated_margin, 6);
+    if (margin > 0) marginHtml += marginHealthBar(margin, upnl);
+
+    return '<tr>' +
+      '<td>' + p.symbol + isolatedBadge + '</td>' +
+      '<td>' + signLabel(p.sign) + '</td>' +
+      '<td>' + leverage + '</td>' +
+      '<td>' + p.position + '</td>' +
+      '<td>' + p.avg_entry_price + '</td>' +
+      '<td class="live-value">' + markPrice + '</td>' +
+      '<td>' + marginHtml + '</td>' +
+      '<td>' + posValue + '</td>' +
+      '<td class="' + pnlClass(upnl) + '">' + formatNumber(upnl, 6) + '</td>' +
+      '<td class="' + pnlClass(rpnl) + '">' + p.realized_pnl + '</td>' +
+      '<td>' + p.open_order_count + '</td>' +
+      '<td title="' + liqTooltip + '">' + liqPrice + '</td>' +
+    '</tr>';
+  }
+
+  // ── Rendering: account content (shared) ───────────────
+
+  function renderAccountContent(acc, skipCheck, refreshIndex) {
+    if (acc._hasPositions === undefined) acc._hasPositions = hasRealPositions(acc.positions);
+
+    const showZero = filterZeroPos.checked;
+    const positions = showZero
+      ? (acc.positions || [])
+      : (acc.positions || []).filter((p) => parseFloat(p.position_value) !== 0);
+
+    // Accumulate totals across positions
+    const totals = { upnl: 0, notional: 0, margin: 0, hasLive: false };
+    let positionsHtml = "";
+
+    if (positions.length > 0) {
+      const posRows = positions.map((p) => renderPositionRow(p, totals)).join("");
+
+      positionsHtml =
+        '<div class="detail-section">' +
+          '<h4>Positions</h4>' +
+          '<div class="table-wrap">' +
+            '<table class="positions-table">' +
+              '<thead><tr>' +
+                '<th>Market</th><th>Side</th><th>Leverage</th><th>Size</th>' +
+                '<th>Avg Entry</th><th>Mark Price</th><th>Margin</th>' +
+                '<th>Value</th><th>Unrealized PnL</th><th>Realized PnL</th>' +
+                '<th>OOC</th><th title="Estimated Liquidation Price">ELP</th>' +
+              '</tr></thead>' +
+              '<tbody>' + posRows + '</tbody>' +
+            '</table>' +
+          '</div>' +
+        '</div>';
+    }
+
+    // Positions count badge for status field
+    const positionsTag = positions.length > 0
+      ? ' <span class="count-badge">' + positions.length + ' pos</span>'
+      : '';
+
+    // Trade stats
+    let tradeStatsHtml = '';
+    if (acc.total_trades_count !== undefined) {
+      tradeStatsHtml =
+        '<div class="field"><span class="label">Trades (day / week / total)</span><span class="value">' +
+          (acc.daily_trades_count || 0) + ' / ' + (acc.weekly_trades_count || 0) + ' / ' + (acc.total_trades_count || 0) +
+        '</span></div>' +
+        '<div class="field"><span class="label">Volume (day / week / total)</span><span class="value">' +
+          formatNumber(acc.daily_volume, 2) + ' / ' + formatNumber(acc.weekly_volume, 2) + ' / ' + formatNumber(acc.total_volume, 2) +
+        '</span></div>';
+    }
+
+    // Live-recalculated account-level values
+    const collateral = parseFloat(acc.collateral) || 0;
+    const liveAsset = collateral + totals.upnl;
+    const displayAsset = totals.hasLive ? liveAsset.toFixed(6) : acc.total_asset_value;
+    const displayAvail = totals.hasLive ? Math.max(0, liveAsset - collateral).toFixed(6) : acc.available_balance;
+
+    let displayLeverage = acc.leverage ? parseFloat(acc.leverage).toFixed(2) + "x" : "—";
+    if (totals.hasLive && liveAsset > 0 && totals.notional > 0) {
+      displayLeverage = (totals.notional / liveAsset).toFixed(2) + "x";
+    }
+
+    const leverageMarginHtml = acctMarginBar(liveAsset, totals.margin);
+
+    // Refresh button
+    const refreshBtn = refreshIndex
+      ? '<div class="field"><span class="label">&nbsp;</span>' +
+        '<button class="btn-refresh" data-refresh="' + refreshIndex + '" title="Re-fetch account data">&#x21bb; Refresh</button></div>'
+      : '';
+
+    return '<div class="detail-grid">' +
+      '<div class="field"><span class="label">Total Asset Value</span><span class="value live-value">' + formatNumber(displayAsset, 6) + '</span></div>' +
+      '<div class="field"><span class="label">Collateral</span><span class="value">' + formatValue(acc.collateral) + '</span></div>' +
+      '<div class="field"><span class="label">Available Balance</span><span class="value live-value">' + formatNumber(displayAvail, 6) + '</span></div>' +
+      '<div class="field"><span class="label">Cross Asset Value</span><span class="value">' + formatValue(acc.cross_asset_value) + '</span></div>' +
+      '<div class="field"><span class="label">Leverage</span><span class="value live-value">' + displayLeverage + leverageMarginHtml + '</span></div>' +
+      '<div class="field"><span class="label">Trading Mode</span><span class="value">' + tradingMode(acc.account_trading_mode) + '</span></div>' +
+      '<div class="field"><span class="label">Status</span><span class="value">' + statusHtml(acc, skipCheck) + positionsTag + '</span></div>' +
+      refreshBtn +
+      tradeStatsHtml +
+    '</div>' +
+    positionsHtml;
+  }
+
+  // ── Rendering: main account card ──────────────────────
 
   function renderMainAccount(acc, subs) {
     mainAccountObj = acc;
-    var tradingSubs = subs.filter(function (s) { return getAccountStatus(s) === "trading"; }).length;
-    var onlineSubs = subs.filter(function (s) { return s.status === 1; }).length;
     acc._hasPositions = hasRealPositions(acc.positions);
+
+    const tradingSubs = subs.filter((s) => getAccountStatus(s) === "trading").length;
+    const onlineSubs = subs.filter((s) => s.status === 1).length;
 
     setField("ma-index", copyableHtml(acc.index));
     setField("ma-status", statusHtml(acc, true));
@@ -271,127 +426,32 @@
     setField("ma-status", statusHtml(mainAccountObj, true));
   }
 
-  // ── Shared account content renderer ───────────────────
-
-  function renderAccountContent(acc, skipCheck) {
-    if (acc._hasPositions === undefined) {
-      acc._hasPositions = hasRealPositions(acc.positions);
-    }
-
-    var positionsHtml = "";
-    var showZero = filterZeroPos.checked;
-    var positions = showZero
-      ? (acc.positions || [])
-      : (acc.positions || []).filter(function (p) { return parseFloat(p.position_value) !== 0; });
-
-    if (positions.length > 0) {
-      var posRows = positions.map(function (p) {
-        var leverage = parseFloat(p.initial_margin_fraction) > 0
-          ? Math.round(100 / parseFloat(p.initial_margin_fraction)) + "x"
-          : "—";
-
-        var mkt = marketData[p.symbol] || {};
-        var markPrice = mkt.mark_price || "—";
-        var upnl = parseFloat(p.unrealized_pnl) || 0;
-        var rpnl = parseFloat(p.realized_pnl) || 0;
-
-        var isolatedBadge = p.margin_mode === 1
-          ? ' <span class="badge badge-isolated" title="Isolated margin · allocated ' + formatValue(p.allocated_margin) + '">Isolated</span>'
-          : '';
-
-        var liqPrice = (!p.liquidation_price || p.liquidation_price === "0" || p.liquidation_price === "") ? "—" : p.liquidation_price;
-
-        return '<tr>' +
-          '<td>' + p.symbol + isolatedBadge + '</td>' +
-          '<td>' + signLabel(p.sign) + '</td>' +
-          '<td>' + leverage + '</td>' +
-          '<td>' + p.position + '</td>' +
-          '<td>' + p.avg_entry_price + '</td>' +
-          '<td class="live-value">' + markPrice + '</td>' +
-          '<td>' + p.position_value + '</td>' +
-          '<td class="' + pnlClass(upnl) + '">' + p.unrealized_pnl + '</td>' +
-          '<td class="' + pnlClass(rpnl) + '">' + p.realized_pnl + '</td>' +
-          '<td>' + p.open_order_count + '</td>' +
-          '<td>' + liqPrice + '</td>' +
-        '</tr>';
-      }).join("");
-
-      positionsHtml =
-        '<div class="detail-section">' +
-          '<h4>Positions</h4>' +
-          '<div class="table-wrap">' +
-            '<table class="positions-table">' +
-              '<thead><tr>' +
-                '<th>Market</th><th>Side</th><th>Leverage</th><th>Size</th>' +
-                '<th>Avg Entry</th><th>Mark Price</th><th>Value</th>' +
-                '<th>Unrealized PnL</th><th>Realized PnL</th><th>OOC</th><th>Liq. Price</th>' +
-              '</tr></thead>' +
-              '<tbody>' + posRows + '</tbody>' +
-            '</table>' +
-          '</div>' +
-        '</div>';
-    }
-
-    var positionsField = positions.length > 0
-      ? '<div class="field"><span class="label">Positions</span><span class="value">' + positions.length + ' open</span></div>'
-      : '<div class="field"><span class="label">Positions</span><span class="value" style="color:var(--text-muted)">No positions</span></div>';
-
-    return '<div class="detail-grid">' +
-      '<div class="field"><span class="label">Total Asset Value</span><span class="value">' + formatNumber(acc.total_asset_value, 6) + '</span></div>' +
-      '<div class="field"><span class="label">Collateral</span><span class="value">' + formatValue(acc.collateral) + '</span></div>' +
-      '<div class="field"><span class="label">Available Balance</span><span class="value">' + formatValue(acc.available_balance) + '</span></div>' +
-      '<div class="field"><span class="label">Cross Asset Value</span><span class="value">' + formatValue(acc.cross_asset_value) + '</span></div>' +
-      '<div class="field"><span class="label">Trading Mode</span><span class="value">' + tradingMode(acc.account_trading_mode) + '</span></div>' +
-      '<div class="field"><span class="label">Status</span><span class="value">' + statusHtml(acc, skipCheck) + '</span></div>' +
-      positionsField +
-    '</div>' +
-    positionsHtml;
-  }
-
-  // ── Render detail panel for expanded sub-account ──────
+  // ── Rendering: detail panel (expanded sub) ────────────
 
   function renderDetailRow(detail, colSpan, index) {
-    var acc = detail.accounts && detail.accounts[0];
-    var attr = index ? ' data-detail-for="' + index + '"' : '';
+    const acc = detail.accounts && detail.accounts[0];
+    const attr = index ? ' data-detail-for="' + index + '"' : '';
     if (!acc) return '<tr class="detail-row"' + attr + '><td colspan="' + colSpan + '">No data</td></tr>';
     return '<tr class="detail-row"' + attr + '><td colspan="' + colSpan + '">' +
-      '<div class="detail-panel">' + renderAccountContent(acc) + '</div>' +
+      '<div class="detail-panel">' + renderAccountContent(acc, false, index) + '</div>' +
     '</td></tr>';
   }
 
-  // ── Render single account card (ID search) ────────────
+  // ── Rendering: single account card (ID search) ────────
 
   function renderSingleAccount(acc) {
     if (acc._hasPositions === undefined) acc._hasPositions = hasRealPositions(acc.positions);
-    var typeLabel = acc.account_type === 0 ? 'Main' : 'Sub';
-    var skipCheck = acc.account_type === 0;
+    const typeLabel = acc.account_type === 0 ? "Main" : "Sub";
+    const skipCheck = acc.account_type === 0;
     saHeader.innerHTML =
       'Account ' + copyableHtml('#' + acc.index) + ' ' +
       '<span class="badge badge-type">' + typeLabel + '</span> ' +
       statusHtml(acc, skipCheck);
-    saContent.innerHTML = renderAccountContent(acc, skipCheck);
+    saContent.innerHTML = renderAccountContent(acc, skipCheck, acc.index);
     show(singleSection);
   }
 
-  // ── Collapse helpers ──────────────────────────────────
-
-  function collapseRow(index) {
-    var detailRow = getDetailRow(index);
-    if (detailRow) detailRow.remove();
-    var subRow = getSubRow(index);
-    if (subRow) subRow.classList.remove("expanded");
-    expandedIndexes.delete(String(index));
-    unsubscribeSubAccount(index);
-  }
-
-  function collapseAllExpanded() {
-    subTbody.querySelectorAll(".detail-row").forEach(function (r) { r.remove(); });
-    subTbody.querySelectorAll("tr.expanded").forEach(function (r) { r.classList.remove("expanded"); });
-    expandedIndexes.clear();
-    unsubscribeAllSubs();
-  }
-
-  // ── Render sub-accounts table ─────────────────────────
+  // ── Rendering: sub-accounts table ─────────────────────
 
   function renderSubRow(acc) {
     return '<tr class="sub-row" data-index="' + acc.index + '">' +
@@ -415,84 +475,69 @@
     subTbody.innerHTML = accounts.map(renderSubRow).join("");
   }
 
-  // ── Click handler for sub-account rows ────────────────
+  // ── Sub-row DOM helpers ───────────────────────────────
 
-  subTbody.addEventListener("click", async function (e) {
-    if (e.target.closest(".detail-row")) return;
-    if (e.target.closest(".copyable")) return; // handled by document-level handler
+  function getSubRow(index) {
+    return subTbody.querySelector('tr.sub-row[data-index="' + index + '"]');
+  }
 
-    var row = e.target.closest("tr.sub-row");
+  function getDetailRow(index) {
+    return subTbody.querySelector('.detail-row[data-detail-for="' + index + '"]');
+  }
+
+  function updateSubRowCells(index, sub) {
+    const row = getSubRow(index);
     if (!row) return;
+    if (row.children[1]) row.children[1].innerHTML = statusHtml(sub);
+    if (row.children[2]) row.children[2].textContent = formatNumber(sub.total_asset_value, 6);
+  }
 
-    var index = row.dataset.index;
+  function reRenderDetail(index) {
+    if (!expandedIndexes.has(index)) return;
+    const sub = allSubAccounts.find((a) => String(a.index) === index);
+    if (!sub || !sub._cachedDetail) return;
+    const detailRow = getDetailRow(index);
+    if (detailRow) detailRow.outerHTML = renderDetailRow(sub._cachedDetail, expandedColSpan, index);
+  }
 
-    if (expandedIndexes.has(index)) {
-      collapseRow(index);
-      return;
-    }
+  function reRenderAllExpanded() {
+    expandedIndexes.forEach(reRenderDetail);
+  }
 
-    // Expand
-    expandedIndexes.add(index);
-    expandedColSpan = row.children.length;
-    row.classList.add("expanded");
+  // ── Collapse helpers ──────────────────────────────────
 
-    var colSpan = expandedColSpan;
-    var sub = allSubAccounts.find(function (a) { return String(a.index) === String(index); });
+  function collapseRow(index) {
+    const detailRow = getDetailRow(index);
+    if (detailRow) detailRow.remove();
+    const subRow = getSubRow(index);
+    if (subRow) subRow.classList.remove("expanded");
+    expandedIndexes.delete(String(index));
+  }
 
-    if (sub && sub._cachedDetail) {
-      var tmp = document.createElement("tr");
-      tmp.className = "detail-row-tmp";
-      row.after(tmp);
-      tmp.outerHTML = renderDetailRow(sub._cachedDetail, colSpan, index);
-      subscribeSubAccount(index);
-    } else {
-      var loadingRow = document.createElement("tr");
-      loadingRow.className = "detail-row";
-      loadingRow.setAttribute("data-detail-for", index);
-      loadingRow.innerHTML = '<td colspan="' + colSpan + '"><div class="detail-panel detail-loading"><div class="spinner"></div> Loading...</div></td>';
-      row.after(loadingRow);
-
-      try {
-        var resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(index));
-        if (!resp.ok) throw new Error("Failed to load");
-        var data = await resp.json();
-        if (!expandedIndexes.has(index)) return;
-
-        loadingRow.outerHTML = renderDetailRow(data, colSpan, index);
-
-        // Sync status from fetched detail
-        var detailAcc = data.accounts && data.accounts[0];
-        if (sub && detailAcc) {
-          sub._hasPositions = hasRealPositions(detailAcc.positions);
-          updateSubRowCells(index, sub);
-        }
-
-        subscribeSubAccount(index);
-      } catch (err) {
-        if (!expandedIndexes.has(index)) return;
-        loadingRow.innerHTML = '<td colspan="' + colSpan + '"><div class="detail-panel detail-error">Failed to load account details</div></td>';
-      }
-    }
-  });
+  function collapseAllExpanded() {
+    subTbody.querySelectorAll(".detail-row").forEach((r) => r.remove());
+    subTbody.querySelectorAll("tr.expanded").forEach((r) => r.classList.remove("expanded"));
+    expandedIndexes.clear();
+  }
 
   // ── Sort logic ────────────────────────────────────────
 
   function getSortValue(acc, key) {
     if (key === "_accountStatus") {
-      var st = getAccountStatus(acc);
+      const st = getAccountStatus(acc);
       return st === "trading" ? 2 : st === "check" ? 1 : 0;
     }
-    var val = acc[key];
+    const val = acc[key];
     if (val === undefined || val === null || val === "") return -Infinity;
-    var num = Number(val);
+    const num = Number(val);
     return isNaN(num) ? val : num;
   }
 
   function sortAccounts(accounts) {
     if (!sortKey) return accounts;
-    return [...accounts].sort(function (a, b) {
-      var va = getSortValue(a, sortKey);
-      var vb = getSortValue(b, sortKey);
+    return [...accounts].sort((a, b) => {
+      const va = getSortValue(a, sortKey);
+      const vb = getSortValue(b, sortKey);
       if (va < vb) return sortAsc ? -1 : 1;
       if (va > vb) return sortAsc ? 1 : -1;
       return (parseFloat(b.total_asset_value) || 0) - (parseFloat(a.total_asset_value) || 0);
@@ -500,33 +545,23 @@
   }
 
   function updateSortIndicators() {
-    document.querySelectorAll("th.sortable").forEach(function (th) {
+    document.querySelectorAll("th.sortable").forEach((th) => {
       th.classList.remove("sort-asc", "sort-desc");
       if (th.dataset.key === sortKey) th.classList.add(sortAsc ? "sort-asc" : "sort-desc");
     });
   }
 
-  document.querySelector("#sub-accounts thead").addEventListener("click", function (e) {
-    var th = e.target.closest("th.sortable");
-    if (!th) return;
-    var key = th.dataset.key;
-    if (sortKey === key) { sortAsc = !sortAsc; }
-    else { sortKey = key; sortAsc = true; }
-    updateSortIndicators();
-    applyFilters();
-  });
-
   // ── Filter logic ──────────────────────────────────────
 
   function getFilteredSubs() {
-    var q = subSearch.value.trim();
-    var onlyBalance = filterBalance.checked;
-    var onlyNoPos = filterActivated.checked;
+    const q = subSearch.value.trim();
+    const onlyBalance = filterBalance.checked;
+    const onlyNoPos = filterActivated.checked;
 
-    var filtered = allSubAccounts;
-    if (q) filtered = filtered.filter(function (acc) { return String(acc.index).includes(q); });
+    let filtered = allSubAccounts;
+    if (q) filtered = filtered.filter((acc) => String(acc.index).includes(q));
     if (onlyBalance) filtered = filtered.filter(hasBalance);
-    if (onlyNoPos) filtered = filtered.filter(function (acc) { return acc._hasPositions !== true; });
+    if (onlyNoPos) filtered = filtered.filter((acc) => acc._hasPositions !== true);
 
     return sortAccounts(filtered);
   }
@@ -539,25 +574,18 @@
     renderSubAccounts(getFilteredSubs());
   }
 
-  subSearch.addEventListener("input", applyFilters);
-  filterBalance.addEventListener("change", applyFilters);
-  filterActivated.addEventListener("change", applyFilters);
-
-  filterZeroPos.addEventListener("change", function () {
-    reRenderAllExpanded();
-    if (singleAccountData && singleAccountData.accounts && singleAccountData.accounts[0]) {
-      var sa = singleAccountData.accounts[0];
-      saContent.innerHTML = renderAccountContent(sa, sa.account_type === 0);
-    }
-  });
-
   // ── CSV export ────────────────────────────────────────
 
-  var CSV_HEADER = ["type", "index", "status", "online", "total_asset_value", "collateral", "available_balance", "cross_asset_value", "trading_mode", "total_orders", "pending_orders"];
+  const CSV_HEADER = [
+    "type", "index", "status", "online", "total_asset_value", "collateral",
+    "available_balance", "cross_asset_value", "trading_mode", "total_orders",
+    "pending_orders", "daily_trades", "daily_volume", "weekly_trades",
+    "weekly_volume", "total_trades", "total_volume",
+  ];
 
   function csvEscape(val) {
-    var s = String(val == null ? "" : val);
-    return (s.indexOf(",") !== -1 || s.indexOf('"') !== -1 || s.indexOf("\n") !== -1)
+    const s = String(val == null ? "" : val);
+    return (s.includes(",") || s.includes('"') || s.includes("\n"))
       ? '"' + s.replace(/"/g, '""') + '"'
       : s;
   }
@@ -570,24 +598,27 @@
       acc.available_balance || "0", acc.cross_asset_value || "0",
       tradingMode(acc.account_trading_mode),
       acc.total_order_count || 0, acc.pending_order_count || 0,
+      acc.daily_trades_count || 0, acc.daily_volume || 0,
+      acc.weekly_trades_count || 0, acc.weekly_volume || 0,
+      acc.total_trades_count || 0, acc.total_volume || 0,
     ].map(csvEscape).join(",");
   }
 
   function csvTimestamp() {
-    var now = new Date();
+    const now = new Date();
     return now.toISOString().slice(0, 10) + "_" +
       String(now.getUTCHours()).padStart(2, "0") + "_" +
       String(now.getUTCMinutes()).padStart(2, "0") + "utc";
   }
 
   function downloadCsv(subs) {
-    var rows = [CSV_HEADER.join(",")];
+    const rows = [CSV_HEADER.join(",")];
     if (mainAccountObj) rows.push(accCsvRow(mainAccountObj, "main"));
-    for (var i = 0; i < subs.length; i++) rows.push(accCsvRow(subs[i], "sub"));
+    for (const sub of subs) rows.push(accCsvRow(sub, "sub"));
 
-    var blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8;" });
-    var url = URL.createObjectURL(blob);
-    var a = document.createElement("a");
+    const blob = new Blob([rows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
     a.href = url;
     a.download = "lighter_accounts_" + csvTimestamp() + ".csv";
     a.click();
@@ -596,16 +627,10 @@
     showToast("CSV Export", (rows.length - 1) + " accounts exported", "success");
   }
 
-  // ── Export modal ──────────────────────────────────────
-
-  var exportAllLabel    = $("export-all-label");
-  var exportFilteredBtn = $("export-filtered");
-  var exportFilteredLabel = $("export-filtered-label");
-
   function showExportModal() {
-    var allCount = allSubAccounts.length + (mainAccountObj ? 1 : 0);
-    var filteredCount = getFilteredSubs().length + (mainAccountObj ? 1 : 0);
-    var active = hasActiveFilters();
+    const allCount = allSubAccounts.length + (mainAccountObj ? 1 : 0);
+    const filteredCount = getFilteredSubs().length + (mainAccountObj ? 1 : 0);
+    const active = hasActiveFilters();
 
     exportAllLabel.textContent = "All accounts (" + allCount + ")";
     exportFilteredLabel.textContent = "With current filters (" + filteredCount + ")";
@@ -617,51 +642,78 @@
 
   function hideExportModal() { hide(exportModal); }
 
-  $("btn-export-csv").addEventListener("click", showExportModal);
-  $("export-all").addEventListener("click", function () { hideExportModal(); downloadCsv(allSubAccounts); });
-  exportFilteredBtn.addEventListener("click", function () {
-    if (this.disabled) return;
-    hideExportModal();
-    downloadCsv(getFilteredSubs());
-  });
-  $("export-cancel").addEventListener("click", hideExportModal);
-  exportModal.addEventListener("click", function (e) { if (e.target === exportModal) hideExportModal(); });
-
-  // ── WS: shared helpers ────────────────────────────────
-
-  var WS = window.LighterWS;
-
-  function refreshAccount(id) {
-    WS.refresh("user_stats/" + id);
-    WS.refresh("account_all/" + id);
-  }
-
-  function applyUserStats(acc, s) {
-    if (s.portfolio_value !== undefined) acc.total_asset_value = s.portfolio_value;
-    if (s.collateral !== undefined) acc.collateral = s.collateral;
-    if (s.available_balance !== undefined) acc.available_balance = s.available_balance;
-    if (s.account_trading_mode !== undefined) acc.account_trading_mode = s.account_trading_mode;
-    if (s.cross_stats && s.cross_stats.portfolio_value !== undefined) {
-      acc.cross_asset_value = s.cross_stats.portfolio_value;
-    }
-  }
-
-  // ── WS: master account ────────────────────────────────
+  // ── WS: subscription management ───────────────────────
 
   function subscribeMasterAccount(accountIndex) {
     unsubscribeMasterAccount();
     masterTrackId = String(accountIndex);
     WS.subscribe("user_stats/" + masterTrackId, handleMainUserStats);
     WS.subscribe("account_all/" + masterTrackId, handleMainAccountAll);
-    masterPollTimer = setInterval(function () { refreshAccount(masterTrackId); }, POLL_INTERVAL);
+    showToast("WebSocket", "Subscribed to user #" + masterTrackId + " updates", "success");
   }
 
   function unsubscribeMasterAccount() {
     if (!masterTrackId) return;
-    if (masterPollTimer) { clearInterval(masterPollTimer); masterPollTimer = null; }
+    const id = masterTrackId;
     WS.unsubscribe("user_stats/" + masterTrackId);
     WS.unsubscribe("account_all/" + masterTrackId);
     masterTrackId = null;
+    showToast("WebSocket", "Unsubscribed from user #" + id, "info");
+  }
+
+  function subscribeSubAccount(accountIndex) {
+    const key = String(accountIndex);
+    if (trackedSubs[key]) return;
+    WS.subscribe("user_stats/" + key, makeSubUserStatsHandler(key));
+    WS.subscribe("account_all/" + key, makeSubAccountAllHandler(key));
+    trackedSubs[key] = true;
+    showToast("WebSocket", "Subscribed to user #" + key + " updates", "success");
+  }
+
+  function unsubscribeSubAccount(accountIndex) {
+    const key = String(accountIndex);
+    if (!trackedSubs[key]) return;
+    delete trackedSubs[key];
+    WS.unsubscribe("user_stats/" + key);
+    WS.unsubscribe("account_all/" + key);
+    showToast("WebSocket", "Unsubscribed from user #" + key, "info");
+  }
+
+  function refreshSubAccount(accountIndex) {
+    const key = String(accountIndex);
+    unsubscribeSubAccount(key);
+    subscribeSubAccount(key);
+  }
+
+  function unsubscribeAllSubs() {
+    for (const key of Object.keys(trackedSubs)) {
+      WS.unsubscribe("user_stats/" + key);
+      WS.unsubscribe("account_all/" + key);
+    }
+    trackedSubs = {};
+  }
+
+  function subscribeSingleAccount(accountIndex) {
+    unsubscribeSingleAccount();
+    singleTrackId = String(accountIndex);
+    WS.subscribe("user_stats/" + singleTrackId, handleSingleUserStats);
+    WS.subscribe("account_all/" + singleTrackId, handleSingleAccountAll);
+    showToast("WebSocket", "Subscribed to user #" + singleTrackId + " updates", "success");
+  }
+
+  function unsubscribeSingleAccount() {
+    if (!singleTrackId) return;
+    const id = singleTrackId;
+    WS.unsubscribe("user_stats/" + singleTrackId);
+    WS.unsubscribe("account_all/" + singleTrackId);
+    singleTrackId = null;
+    showToast("WebSocket", "Unsubscribed from user #" + id, "info");
+  }
+
+  // ── WS: message handlers ──────────────────────────────
+
+  function findSub(index) {
+    return allSubAccounts.find((a) => String(a.index) === index);
   }
 
   function handleMainUserStats(msg) {
@@ -673,45 +725,14 @@
   function handleMainAccountAll(msg) {
     if (!mainAccountObj) return;
     applyWsPositions(mainAccountObj, msg);
+    applyTradeStats(mainAccountObj, msg);
     setField("ma-status", statusHtml(mainAccountObj, true));
   }
 
-  // ── WS: sub-accounts (expanded only) ─────────────────
-
-  function subscribeSubAccount(accountIndex) {
-    var key = String(accountIndex);
-    if (trackedSubs[key]) return;
-    WS.subscribe("user_stats/" + key, makeSubUserStatsHandler(key));
-    WS.subscribe("account_all/" + key, makeSubAccountAllHandler(key));
-    trackedSubs[key] = setInterval(function () { refreshAccount(key); }, POLL_INTERVAL);
-  }
-
-  function unsubscribeSubAccount(accountIndex) {
-    var key = String(accountIndex);
-    if (!trackedSubs[key]) return;
-    clearInterval(trackedSubs[key]);
-    delete trackedSubs[key];
-    WS.unsubscribe("user_stats/" + key);
-    WS.unsubscribe("account_all/" + key);
-  }
-
-  function unsubscribeAllSubs() {
-    Object.keys(trackedSubs).forEach(function (key) {
-      clearInterval(trackedSubs[key]);
-      WS.unsubscribe("user_stats/" + key);
-      WS.unsubscribe("account_all/" + key);
-    });
-    trackedSubs = {};
-  }
-
-  function findSub(index) {
-    return allSubAccounts.find(function (a) { return String(a.index) === index; });
-  }
-
   function makeSubUserStatsHandler(index) {
-    return function (msg) {
+    return (msg) => {
       if (!msg.stats) return;
-      var sub = findSub(index);
+      const sub = findSub(index);
       if (!sub) return;
 
       applyUserStats(sub, msg.stats);
@@ -723,38 +744,19 @@
   }
 
   function makeSubAccountAllHandler(index) {
-    return function (msg) {
-      var sub = findSub(index);
+    return (msg) => {
+      const sub = findSub(index);
       if (!sub) return;
 
       if (!sub._cachedDetail) sub._cachedDetail = { accounts: [sub] };
-      var acc = sub._cachedDetail.accounts[0];
+      const acc = sub._cachedDetail.accounts[0];
 
-      if (applyWsPositions(acc, msg)) {
-        sub._hasPositions = acc._hasPositions;
-      }
+      if (applyWsPositions(acc, msg)) sub._hasPositions = acc._hasPositions;
+      applyTradeStats(acc, msg);
 
       updateSubRowCells(index, sub);
       reRenderDetail(index);
     };
-  }
-
-  // ── WS: single account (ID search) ───────────────────
-
-  function subscribeSingleAccount(accountIndex) {
-    unsubscribeSingleAccount();
-    singleTrackId = String(accountIndex);
-    WS.subscribe("user_stats/" + singleTrackId, handleSingleUserStats);
-    WS.subscribe("account_all/" + singleTrackId, handleSingleAccountAll);
-    singlePollTimer = setInterval(function () { refreshAccount(singleTrackId); }, POLL_INTERVAL);
-  }
-
-  function unsubscribeSingleAccount() {
-    if (!singleTrackId) return;
-    if (singlePollTimer) { clearInterval(singlePollTimer); singlePollTimer = null; }
-    WS.unsubscribe("user_stats/" + singleTrackId);
-    WS.unsubscribe("account_all/" + singleTrackId);
-    singleTrackId = null;
   }
 
   function getSingleAcc() {
@@ -762,29 +764,29 @@
   }
 
   function handleSingleUserStats(msg) {
-    var acc = getSingleAcc();
+    const acc = getSingleAcc();
     if (!acc || !msg.stats) return;
     applyUserStats(acc, msg.stats);
     renderSingleAccount(acc);
   }
 
   function handleSingleAccountAll(msg) {
-    var acc = getSingleAcc();
+    const acc = getSingleAcc();
     if (!acc) return;
     applyWsPositions(acc, msg);
+    applyTradeStats(acc, msg);
     renderSingleAccount(acc);
   }
 
-  // ── WS: market data ──────────────────────────────────
+  // ── WS: market data & height ──────────────────────────
 
   function handleMarketStats(msg) {
-    var raw = msg.market_stats;
+    const raw = msg.market_stats;
     if (!raw) return;
 
-    var statsList = raw.symbol ? [raw] : Object.values(raw).filter(function (v) { return v && typeof v === "object"; });
+    const statsList = raw.symbol ? [raw] : Object.values(raw).filter((v) => v && typeof v === "object");
 
-    for (var i = 0; i < statsList.length; i++) {
-      var m = statsList[i];
+    for (const m of statsList) {
       if (m.symbol) {
         marketData[m.symbol] = {
           mark_price: m.mark_price,
@@ -795,45 +797,45 @@
       }
     }
 
-    var count = Object.keys(marketData).length;
-    if (count > 0) wsStatusText.textContent = "Live · " + count + " mkts";
+    const count = Object.keys(marketData).length;
+    if (count > 0) wsStatusText.textContent = "Live \u00b7 " + count + " mkts";
 
     if (!marketDataReceived && count > 0) {
       marketDataReceived = true;
       showToast("Market Data", count + " markets streaming", "success");
     }
 
-    // Throttle mark price re-render
-    if (!marketRenderTimer && expandedIndexes.size > 0) {
-      marketRenderTimer = setTimeout(function () {
+    // Throttled re-render of expanded panels
+    const needsRender = expandedIndexes.size > 0 || (singleAccountData && !singleSection.classList.contains("hidden"));
+    if (!marketRenderTimer && needsRender) {
+      marketRenderTimer = setTimeout(() => {
         marketRenderTimer = null;
         reRenderAllExpanded();
+        const sa = getSingleAcc();
+        if (sa && !singleSection.classList.contains("hidden")) renderSingleAccount(sa);
       }, 2000);
     }
   }
 
-  // ── WS: blockchain height ─────────────────────────────
-
-  var heightFlashTimer = null;
+  let heightFlashTimer = null;
 
   function handleHeight(msg) {
     if (msg.height === undefined) return;
     blockHeight.textContent = Number(msg.height).toLocaleString();
-
     blockChip.classList.add("chip-flash");
     if (heightFlashTimer) clearTimeout(heightFlashTimer);
-    heightFlashTimer = setTimeout(function () { blockChip.classList.remove("chip-flash"); }, 600);
+    heightFlashTimer = setTimeout(() => blockChip.classList.remove("chip-flash"), 600);
   }
 
   // ── WS initialization ────────────────────────────────
 
   async function initWebSocket() {
     try {
-      var resp = await fetch("/api/config");
+      const resp = await fetch("/api/config");
       if (!resp.ok) return;
-      var config = await resp.json();
+      const config = await resp.json();
 
-      WS.onStatusChange(function (isConnected) {
+      WS.onStatusChange((isConnected) => {
         wsDot.classList.toggle("ws-connected", isConnected);
         wsStatusText.textContent = isConnected ? "Live" : "Reconnecting...";
         if (isConnected) showToast("WebSocket", "Connected to Lighter", "success");
@@ -847,9 +849,7 @@
     }
   }
 
-  initWebSocket();
-
-  // ── Reset view ────────────────────────────────────────
+  // ── Navigation: reset & load ──────────────────────────
 
   function resetView() {
     input.value = "";
@@ -870,15 +870,8 @@
     unsubscribeSingleAccount();
   }
 
-  appTitle.addEventListener("click", resetView);
-
-  // ── Fetch & display ───────────────────────────────────
-
   async function loadAddress(l1Address) {
-    hide(mainSection);
-    hide(subSection);
-    hide(singleSection);
-    hide(errorEl);
+    hide(mainSection); hide(subSection); hide(singleSection); hide(errorEl);
     show(loadingEl);
     subSearch.value = "";
     filterBalance.checked = false;
@@ -889,18 +882,18 @@
     unsubscribeSingleAccount();
 
     try {
-      var resp = await fetch("/api/account?by=l1_address&value=" + encodeURIComponent(l1Address));
+      const resp = await fetch("/api/account?by=l1_address&value=" + encodeURIComponent(l1Address));
       if (!resp.ok) {
-        var detail = await resp.json().catch(function () { return {}; });
+        const detail = await resp.json().catch(() => ({}));
         throw new Error(detail.detail || "HTTP " + resp.status);
       }
 
-      var data = await resp.json();
-      var accounts = data.accounts || [];
+      const data = await resp.json();
+      const accounts = data.accounts || [];
       if (accounts.length === 0) throw new Error("No accounts found for address " + l1Address);
 
-      var main = accounts.find(function (a) { return a.account_type === 0; });
-      allSubAccounts = accounts.filter(function (a) { return a.account_type === 1; }).map(function (acc) {
+      const main = accounts.find((a) => a.account_type === 0);
+      allSubAccounts = accounts.filter((a) => a.account_type === 1).map((acc) => {
         acc._hasPositions = hasRealPositions(acc.positions);
         acc._cachedDetail = { accounts: [acc] };
         return acc;
@@ -924,10 +917,7 @@
   }
 
   async function loadAccountById(accountId) {
-    hide(mainSection);
-    hide(subSection);
-    hide(singleSection);
-    hide(errorEl);
+    hide(mainSection); hide(subSection); hide(singleSection); hide(errorEl);
     show(loadingEl);
 
     unsubscribeMasterAccount();
@@ -935,14 +925,14 @@
     unsubscribeSingleAccount();
 
     try {
-      var resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(accountId));
+      const resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(accountId));
       if (!resp.ok) {
-        var detail = await resp.json().catch(function () { return {}; });
+        const detail = await resp.json().catch(() => ({}));
         throw new Error(detail.detail || "HTTP " + resp.status);
       }
 
-      var data = await resp.json();
-      var accounts = data.accounts || [];
+      const data = await resp.json();
+      const accounts = data.accounts || [];
       if (accounts.length === 0) throw new Error("Account #" + accountId + " not found");
 
       singleAccountData = data;
@@ -956,10 +946,10 @@
     }
   }
 
-  // ── Address history (localStorage + datalist) ─────────
+  // ── Address history (localStorage) ─────────────────────
 
-  var HISTORY_KEY = "lighter_l1_history";
-  var historyDatalist = $("l1-history");
+  const HISTORY_KEY = "lighter_l1_history";
+  const historyDatalist = $("l1-history");
 
   function loadHistory() {
     try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; }
@@ -967,7 +957,7 @@
   }
 
   function saveToHistory(addr) {
-    var history = loadHistory().filter(function (a) { return a !== addr; });
+    let history = loadHistory().filter((a) => a !== addr);
     history.unshift(addr);
     if (history.length > 20) history = history.slice(0, 20);
     localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
@@ -975,16 +965,11 @@
   }
 
   function renderHistory(history) {
-    historyDatalist.innerHTML = history.map(function (a) { return '<option value="' + a + '">'; }).join("");
+    historyDatalist.innerHTML = history.map((a) => '<option value="' + a + '">').join("");
   }
 
-  renderHistory(loadHistory());
-  updateSortIndicators();
-
-  // ── Form submit ───────────────────────────────────────
-
   function doSearch() {
-    var val = input.value.trim();
+    const val = input.value.trim();
     if (!val) return;
     saveToHistory(val);
 
@@ -998,8 +983,128 @@
     }
   }
 
-  form.addEventListener("submit", function (e) { e.preventDefault(); doSearch(); });
-  input.addEventListener("keydown", function (e) {
+  // ── Event listeners ───────────────────────────────────
+
+  // Sub-account row expand/collapse + refresh
+  subTbody.addEventListener("click", async (e) => {
+    const refreshBtn = e.target.closest(".btn-refresh");
+    if (refreshBtn) {
+      e.stopPropagation();
+      refreshSubAccount(refreshBtn.dataset.refresh);
+      return;
+    }
+
+    if (e.target.closest(".detail-row")) return;
+    if (e.target.closest(".copyable")) return;
+
+    const row = e.target.closest("tr.sub-row");
+    if (!row) return;
+
+    const index = row.dataset.index;
+
+    if (expandedIndexes.has(index)) {
+      collapseRow(index);
+      return;
+    }
+
+    // Expand
+    expandedIndexes.add(index);
+    expandedColSpan = row.children.length;
+    row.classList.add("expanded");
+
+    const colSpan = expandedColSpan;
+    const sub = allSubAccounts.find((a) => String(a.index) === String(index));
+
+    if (sub && sub._cachedDetail) {
+      const tmp = document.createElement("tr");
+      tmp.className = "detail-row-tmp";
+      row.after(tmp);
+      tmp.outerHTML = renderDetailRow(sub._cachedDetail, colSpan, index);
+      subscribeSubAccount(index);
+    } else {
+      const loadingRow = document.createElement("tr");
+      loadingRow.className = "detail-row";
+      loadingRow.setAttribute("data-detail-for", index);
+      loadingRow.innerHTML = '<td colspan="' + colSpan + '"><div class="detail-panel detail-loading"><div class="spinner"></div> Loading...</div></td>';
+      row.after(loadingRow);
+
+      try {
+        const resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(index));
+        if (!resp.ok) throw new Error("Failed to load");
+        const data = await resp.json();
+        if (!expandedIndexes.has(index)) return;
+
+        loadingRow.outerHTML = renderDetailRow(data, colSpan, index);
+
+        const detailAcc = data.accounts && data.accounts[0];
+        if (sub && detailAcc) {
+          sub._hasPositions = hasRealPositions(detailAcc.positions);
+          updateSubRowCells(index, sub);
+        }
+
+        subscribeSubAccount(index);
+      } catch (err) {
+        if (!expandedIndexes.has(index)) return;
+        loadingRow.innerHTML = '<td colspan="' + colSpan + '"><div class="detail-panel detail-error">Failed to load account details</div></td>';
+      }
+    }
+  });
+
+  // Sort headers
+  document.querySelector("#sub-accounts thead").addEventListener("click", (e) => {
+    const th = e.target.closest("th.sortable");
+    if (!th) return;
+    const key = th.dataset.key;
+    if (sortKey === key) { sortAsc = !sortAsc; }
+    else { sortKey = key; sortAsc = true; }
+    updateSortIndicators();
+    applyFilters();
+  });
+
+  // Filters
+  subSearch.addEventListener("input", applyFilters);
+  filterBalance.addEventListener("change", applyFilters);
+  filterActivated.addEventListener("change", applyFilters);
+
+  filterZeroPos.addEventListener("change", () => {
+    reRenderAllExpanded();
+    const sa = getSingleAcc();
+    if (sa) saContent.innerHTML = renderAccountContent(sa, sa.account_type === 0, sa.index);
+  });
+
+  // Export modal
+  $("btn-export-csv").addEventListener("click", showExportModal);
+  $("export-all").addEventListener("click", () => { hideExportModal(); downloadCsv(allSubAccounts); });
+  exportFilteredBtn.addEventListener("click", function () {
+    if (this.disabled) return;
+    hideExportModal();
+    downloadCsv(getFilteredSubs());
+  });
+  $("export-cancel").addEventListener("click", hideExportModal);
+  exportModal.addEventListener("click", (e) => { if (e.target === exportModal) hideExportModal(); });
+
+  // Single account refresh
+  singleSection.addEventListener("click", (e) => {
+    const refreshBtn = e.target.closest(".btn-refresh");
+    if (!refreshBtn || !singleTrackId) return;
+    e.stopPropagation();
+    const idx = singleTrackId;
+    unsubscribeSingleAccount();
+    subscribeSingleAccount(idx);
+  });
+
+  // Title click resets
+  appTitle.addEventListener("click", resetView);
+
+  // Form submit
+  form.addEventListener("submit", (e) => { e.preventDefault(); doSearch(); });
+  input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); doSearch(); }
   });
+
+  // ── Init ──────────────────────────────────────────────
+
+  renderHistory(loadHistory());
+  updateSortIndicators();
+  initWebSocket();
 })();

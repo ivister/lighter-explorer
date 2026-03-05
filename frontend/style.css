@@ -542,6 +542,27 @@ tr.detail-row > td {
   padding: 1rem 1.25rem;
 }
 
+.btn-refresh {
+  background: rgba(48, 54, 61, 0.6);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.65rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  transition: color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+  align-self: flex-start;
+}
+
+.btn-refresh:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .detail-loading,
 .detail-error {
   display: flex;
@@ -601,6 +622,42 @@ tr.detail-row > td {
 
 .pnl-zero {
   color: var(--text-muted);
+}
+
+/* ── Margin usage bar ─────────────────────────────────────── */
+
+.margin-bar {
+  margin-top: 4px;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.margin-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.margin-fill.margin-ok    { background: var(--green); }
+.margin-fill.margin-warn  { background: #d29922; }
+.margin-fill.margin-danger { background: var(--red); }
+
+.margin-pct {
+  display: block;
+  font-size: 0.7rem;
+  margin-top: 2px;
+}
+
+.margin-pct.margin-ok    { color: var(--green); }
+.margin-pct.margin-warn  { color: #d29922; }
+.margin-pct.margin-danger { color: var(--red); }
+
+.margin-bar-lg {
+  height: 6px;
+  margin-top: 6px;
+  width: 100%;
 }
 
 /* ── Long/Short badges ──────────────────────────────────── */
