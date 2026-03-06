@@ -458,16 +458,6 @@ tbody tr:not(.sub-row):not(.detail-row):hover {
   font-weight: 600;
 }
 
-.badge-active {
-  background: rgba(63, 185, 80, 0.15);
-  color: var(--green);
-}
-
-.badge-inactive {
-  background: rgba(248, 81, 73, 0.15);
-  color: var(--red);
-}
-
 .badge-trading {
   background: rgba(63, 185, 80, 0.15);
   color: var(--green);
@@ -493,11 +483,6 @@ tbody tr:not(.sub-row):not(.detail-row):hover {
   font-weight: 500;
   padding: 0.1rem 0.4rem;
   cursor: help;
-}
-
-.badge-unknown {
-  background: rgba(139, 148, 158, 0.15);
-  color: var(--text-muted);
 }
 
 .badge-type {
@@ -597,11 +582,6 @@ tr.detail-row > td {
   color: var(--text-muted);
   letter-spacing: 0.04em;
   margin-bottom: 0.5rem;
-}
-
-.detail-empty {
-  color: var(--text-muted);
-  font-size: 0.85rem;
 }
 
 .positions-table {
@@ -843,12 +823,16 @@ tr.detail-row > td {
   to   { opacity: 0; transform: translateX(100%); }
 }
 
-/* ── Live data flash ───────────────────────────────────── */
+/* ── uPnL percent inline ──────────────────────────────── */
+
+.upnl-pct {
+  opacity: 0.65;
+  font-size: 0.75em;
+  margin-left: 0.2em;
+}
+
+/* ── Live data ────────────────────────────────────────── */
 
 .live-value {
   transition: color 0.3s ease;
-}
-
-.live-flash {
-  color: var(--accent) !important;
 }

@@ -30,7 +30,6 @@
   const exportAllLabel   = $("export-all-label");
   const exportFilteredBtn   = $("export-filtered");
   const exportFilteredLabel = $("export-filtered-label");
-
   const WS = window.LighterWS;
 
   // ── State ───────────────────────────────────────────────
@@ -49,7 +48,8 @@
 
   let masterTrackId     = null;
   let singleTrackId     = null;
-  let trackedSubs       = {};  // { index: true }
+  let trackedSubs       = {};       // { index: true }
+  let expandGeneration  = {};       // { index: counter } for race condition
 
   // ── Pure helpers ──────────────────────────────────────────
 
@@ -57,14 +57,24 @@
   const hide = (el) => el.classList.add("hidden");
   const setField = (id, html) => { $(id).innerHTML = html; };
 
+  // HTML-escape untrusted data to prevent XSS
+  function esc(s) {
+    if (s === null || s === undefined) return "";
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   function formatValue(val) {
-    return (!val || val === "") ? "—" : val;
+    return (!val || val === "") ? "—" : esc(val);
   }
 
   function formatNumber(val, decimals) {
     if (val === undefined || val === null || val === "") return "—";
     const n = parseFloat(val);
-    return isNaN(n) ? String(val) : n.toFixed(decimals);
+    return isNaN(n) ? esc(String(val)) : n.toFixed(decimals);
   }
 
   function tradingMode(mode) {
@@ -178,16 +188,32 @@
     }
   }
 
-  // ── Toast notifications ───────────────────────────────
+  // ── Toast notifications (with deduplication) ───────────
+
+  const recentToasts = new Map();
 
   function showToast(title, message, type) {
     type = type || "info";
+
+    // Deduplicate: skip if same toast shown in last 5 seconds
+    const key = type + ":" + title + ":" + message;
+    const now = Date.now();
+    if (recentToasts.has(key) && now - recentToasts.get(key) < 5000) return;
+    recentToasts.set(key, now);
+
+    // Prune old entries
+    if (recentToasts.size > 50) {
+      for (const [k, t] of recentToasts) {
+        if (now - t > 10000) recentToasts.delete(k);
+      }
+    }
+
     const el = document.createElement("div");
     el.className = "toast toast-" + type;
     el.innerHTML =
       '<div class="toast-body">' +
-        '<div class="toast-title">' + title + '</div>' +
-        '<div class="toast-message">' + message + '</div>' +
+        '<div class="toast-title">' + esc(title) + '</div>' +
+        '<div class="toast-message">' + esc(message) + '</div>' +
       '</div>' +
       '<button class="toast-close">&times;</button>';
 
@@ -216,7 +242,7 @@
   }
 
   function copyableHtml(value) {
-    return '<span class="copyable" data-copy="' + value + '" title="Click to copy">' + value + '</span>';
+    return '<span class="copyable" data-copy="' + esc(value) + '" title="Click to copy">' + esc(value) + '</span>';
   }
 
   document.addEventListener("click", (e) => {
@@ -254,6 +280,7 @@
     const mkt = marketData[p.symbol] || {};
     const markPrice = mkt.mark_price || "—";
     const mp = parseFloat(mkt.mark_price);
+    const fundingRate = mkt.funding_rate;
 
     // Value = entry × size (static); notional = mark × size (for leverage)
     const posValue = p.position_value;
@@ -272,13 +299,25 @@
 
     const rpnl = parseFloat(p.realized_pnl) || 0;
 
+    // uPnL % (return on margin / ROE)
+    const upnlPct = margin > 0 ? (upnl / margin * 100) : 0;
+
     const leverage = parseFloat(p.initial_margin_fraction) > 0
       ? Math.round(100 / parseFloat(p.initial_margin_fraction)) + "x"
       : "—";
 
     const isolatedBadge = p.margin_mode === 1
-      ? ' <span class="badge badge-isolated" title="Isolated margin · allocated ' + formatValue(p.allocated_margin) + '">Isolated</span>'
+      ? ' <span class="badge badge-isolated" title="Isolated margin · allocated ' + esc(p.allocated_margin) + '">Isolated</span>'
       : '';
+
+    // Funding rate display
+    let fundingHtml = "—";
+    if (fundingRate !== undefined && fundingRate !== null) {
+      const fr = parseFloat(fundingRate);
+      if (!isNaN(fr)) {
+        fundingHtml = (fr * 100).toFixed(4) + '%';
+      }
+    }
 
     // ELP tooltip with formula
     const liqRaw = p.liquidation_price;
@@ -295,19 +334,20 @@
     let marginHtml = formatNumber(p.allocated_margin, 6);
     if (margin > 0) marginHtml += marginHealthBar(margin, upnl);
 
-    return '<tr>' +
-      '<td>' + p.symbol + isolatedBadge + '</td>' +
+    return '<tr data-pos-symbol="' + esc(p.symbol) + '">' +
+      '<td>' + esc(p.symbol) + isolatedBadge + '</td>' +
       '<td>' + signLabel(p.sign) + '</td>' +
       '<td>' + leverage + '</td>' +
-      '<td>' + p.position + '</td>' +
-      '<td>' + p.avg_entry_price + '</td>' +
-      '<td class="live-value">' + markPrice + '</td>' +
+      '<td>' + esc(p.position) + '</td>' +
+      '<td>' + esc(p.avg_entry_price) + '</td>' +
+      '<td class="live-value">' + esc(markPrice) + '</td>' +
+      '<td class="live-value">' + fundingHtml + '</td>' +
       '<td>' + marginHtml + '</td>' +
-      '<td>' + posValue + '</td>' +
-      '<td class="' + pnlClass(upnl) + '">' + formatNumber(upnl, 6) + '</td>' +
-      '<td class="' + pnlClass(rpnl) + '">' + p.realized_pnl + '</td>' +
-      '<td>' + p.open_order_count + '</td>' +
-      '<td title="' + liqTooltip + '">' + liqPrice + '</td>' +
+      '<td>' + esc(posValue) + '</td>' +
+      '<td class="' + pnlClass(upnl) + '">' + formatNumber(upnl, 6) + (margin > 0 ? ' <span class="upnl-pct">(' + upnlPct.toFixed(2) + '%)</span>' : '') + '</td>' +
+      '<td class="' + pnlClass(rpnl) + '">' + esc(p.realized_pnl) + '</td>' +
+      '<td>' + esc(p.open_order_count) + '</td>' +
+      '<td title="' + esc(liqTooltip) + '">' + liqPrice + '</td>' +
     '</tr>';
   }
 
@@ -334,9 +374,9 @@
           '<div class="table-wrap">' +
             '<table class="positions-table">' +
               '<thead><tr>' +
-                '<th>Market</th><th>Side</th><th>Leverage</th><th>Size</th>' +
-                '<th>Avg Entry</th><th>Mark Price</th><th>Margin</th>' +
-                '<th>Value</th><th>Unrealized PnL</th><th>Realized PnL</th>' +
+                '<th>Market</th><th>Side</th><th>Lev</th><th>Size</th>' +
+                '<th>Entry</th><th>Mark</th><th>Funding</th><th>Margin</th>' +
+                '<th>Value</th><th>uPnL</th><th>rPnL</th>' +
                 '<th>OOC</th><th title="Estimated Liquidation Price">ELP</th>' +
               '</tr></thead>' +
               '<tbody>' + posRows + '</tbody>' +
@@ -366,7 +406,8 @@
     const collateral = parseFloat(acc.collateral) || 0;
     const liveAsset = collateral + totals.upnl;
     const displayAsset = totals.hasLive ? liveAsset.toFixed(6) : acc.total_asset_value;
-    const displayAvail = totals.hasLive ? Math.max(0, liveAsset - collateral).toFixed(6) : acc.available_balance;
+    // FIX: available = total_asset_value - allocated_margin (not - collateral)
+    const displayAvail = totals.hasLive ? Math.max(0, liveAsset - totals.margin).toFixed(6) : acc.available_balance;
 
     let displayLeverage = acc.leverage ? parseFloat(acc.leverage).toFixed(2) + "x" : "—";
     if (totals.hasLive && liveAsset > 0 && totals.notional > 0) {
@@ -378,7 +419,7 @@
     // Refresh button
     const refreshBtn = refreshIndex
       ? '<div class="field"><span class="label">&nbsp;</span>' +
-        '<button class="btn-refresh" data-refresh="' + refreshIndex + '" title="Re-fetch account data">&#x21bb; Refresh</button></div>'
+        '<button class="btn-refresh" data-refresh="' + esc(refreshIndex) + '" title="Re-fetch account data">&#x21bb; Refresh</button></div>'
       : '';
 
     return '<div class="detail-grid">' +
@@ -410,8 +451,8 @@
     setField("ma-collateral", formatValue(acc.collateral));
     setField("ma-balance", formatValue(acc.available_balance));
     setField("ma-mode", tradingMode(acc.account_trading_mode));
-    setField("ma-orders", acc.total_order_count);
-    setField("ma-pending", acc.pending_order_count);
+    setField("ma-orders", esc(acc.total_order_count));
+    setField("ma-pending", esc(acc.pending_order_count));
     setField("ma-active-subs", tradingSubs + " / " + subs.length);
     setField("ma-online", onlineSubs);
     show(mainSection);
@@ -430,7 +471,7 @@
 
   function renderDetailRow(detail, colSpan, index) {
     const acc = detail.accounts && detail.accounts[0];
-    const attr = index ? ' data-detail-for="' + index + '"' : '';
+    const attr = index ? ' data-detail-for="' + esc(index) + '"' : '';
     if (!acc) return '<tr class="detail-row"' + attr + '><td colspan="' + colSpan + '">No data</td></tr>';
     return '<tr class="detail-row"' + attr + '><td colspan="' + colSpan + '">' +
       '<div class="detail-panel">' + renderAccountContent(acc, false, index) + '</div>' +
@@ -454,13 +495,13 @@
   // ── Rendering: sub-accounts table ─────────────────────
 
   function renderSubRow(acc) {
-    return '<tr class="sub-row" data-index="' + acc.index + '">' +
+    return '<tr class="sub-row" data-index="' + esc(acc.index) + '">' +
       '<td class="mono">' + copyableHtml(acc.index) + '</td>' +
       '<td>' + statusHtml(acc) + '</td>' +
       '<td>' + formatNumber(acc.total_asset_value, 6) + '</td>' +
       '<td>' + tradingMode(acc.account_trading_mode) + '</td>' +
-      '<td>' + acc.total_order_count + '</td>' +
-      '<td>' + acc.pending_order_count + '</td>' +
+      '<td>' + esc(acc.total_order_count) + '</td>' +
+      '<td>' + esc(acc.pending_order_count) + '</td>' +
     '</tr>';
   }
 
@@ -512,12 +553,6 @@
     const subRow = getSubRow(index);
     if (subRow) subRow.classList.remove("expanded");
     expandedIndexes.delete(String(index));
-  }
-
-  function collapseAllExpanded() {
-    subTbody.querySelectorAll(".detail-row").forEach((r) => r.remove());
-    subTbody.querySelectorAll("tr.expanded").forEach((r) => r.classList.remove("expanded"));
-    expandedIndexes.clear();
   }
 
   // ── Sort logic ────────────────────────────────────────
@@ -579,8 +614,7 @@
   const CSV_HEADER = [
     "type", "index", "status", "online", "total_asset_value", "collateral",
     "available_balance", "cross_asset_value", "trading_mode", "total_orders",
-    "pending_orders", "daily_trades", "daily_volume", "weekly_trades",
-    "weekly_volume", "total_trades", "total_volume",
+    "pending_orders",
   ];
 
   function csvEscape(val) {
@@ -598,9 +632,6 @@
       acc.available_balance || "0", acc.cross_asset_value || "0",
       tradingMode(acc.account_trading_mode),
       acc.total_order_count || 0, acc.pending_order_count || 0,
-      acc.daily_trades_count || 0, acc.daily_volume || 0,
-      acc.weekly_trades_count || 0, acc.weekly_volume || 0,
-      acc.total_trades_count || 0, acc.total_volume || 0,
     ].map(csvEscape).join(",");
   }
 
@@ -649,16 +680,14 @@
     masterTrackId = String(accountIndex);
     WS.subscribe("user_stats/" + masterTrackId, handleMainUserStats);
     WS.subscribe("account_all/" + masterTrackId, handleMainAccountAll);
-    showToast("WebSocket", "Subscribed to user #" + masterTrackId + " updates", "success");
+    showToast("WebSocket", "Subscribed to master #" + masterTrackId, "success");
   }
 
   function unsubscribeMasterAccount() {
     if (!masterTrackId) return;
-    const id = masterTrackId;
     WS.unsubscribe("user_stats/" + masterTrackId);
     WS.unsubscribe("account_all/" + masterTrackId);
     masterTrackId = null;
-    showToast("WebSocket", "Unsubscribed from user #" + id, "info");
   }
 
   function subscribeSubAccount(accountIndex) {
@@ -667,7 +696,7 @@
     WS.subscribe("user_stats/" + key, makeSubUserStatsHandler(key));
     WS.subscribe("account_all/" + key, makeSubAccountAllHandler(key));
     trackedSubs[key] = true;
-    showToast("WebSocket", "Subscribed to user #" + key + " updates", "success");
+    showToast("WebSocket", "Subscribed to sub #" + key, "success");
   }
 
   function unsubscribeSubAccount(accountIndex) {
@@ -676,13 +705,14 @@
     delete trackedSubs[key];
     WS.unsubscribe("user_stats/" + key);
     WS.unsubscribe("account_all/" + key);
-    showToast("WebSocket", "Unsubscribed from user #" + key, "info");
+    // No individual toast — reduces spam
   }
 
   function refreshSubAccount(accountIndex) {
     const key = String(accountIndex);
     unsubscribeSubAccount(key);
     subscribeSubAccount(key);
+    showToast("WebSocket", "Refreshed subscription for #" + key, "info");
   }
 
   function unsubscribeAllSubs() {
@@ -698,16 +728,14 @@
     singleTrackId = String(accountIndex);
     WS.subscribe("user_stats/" + singleTrackId, handleSingleUserStats);
     WS.subscribe("account_all/" + singleTrackId, handleSingleAccountAll);
-    showToast("WebSocket", "Subscribed to user #" + singleTrackId + " updates", "success");
+    showToast("WebSocket", "Subscribed to account #" + singleTrackId, "success");
   }
 
   function unsubscribeSingleAccount() {
     if (!singleTrackId) return;
-    const id = singleTrackId;
     WS.unsubscribe("user_stats/" + singleTrackId);
     WS.unsubscribe("account_all/" + singleTrackId);
     singleTrackId = null;
-    showToast("WebSocket", "Unsubscribed from user #" + id, "info");
   }
 
   // ── WS: message handlers ──────────────────────────────
@@ -791,6 +819,8 @@
         marketData[m.symbol] = {
           mark_price: m.mark_price,
           index_price: m.index_price,
+          funding_rate: m.funding_rate,
+          next_funding_rate: m.next_funding_rate,
           open_interest: m.open_interest,
           daily_volume: m.daily_quote_token_volume,
         };
@@ -806,7 +836,9 @@
     }
 
     // Throttled re-render of expanded panels
-    const needsRender = expandedIndexes.size > 0 || (singleAccountData && !singleSection.classList.contains("hidden"));
+    const needsRender = expandedIndexes.size > 0 ||
+      (singleAccountData && !singleSection.classList.contains("hidden"));
+
     if (!marketRenderTimer && needsRender) {
       marketRenderTimer = setTimeout(() => {
         marketRenderTimer = null;
@@ -849,6 +881,27 @@
     }
   }
 
+  // ── URL deep linking ──────────────────────────────────
+
+  function updateUrlHash(query) {
+    if (query) {
+      history.replaceState(null, "", "#q=" + encodeURIComponent(query));
+    } else {
+      history.replaceState(null, "", window.location.pathname);
+    }
+  }
+
+  function loadFromUrlHash() {
+    const hash = window.location.hash;
+    if (hash.startsWith("#q=")) {
+      const q = decodeURIComponent(hash.slice(3));
+      if (q) {
+        input.value = q;
+        doSearch();
+      }
+    }
+  }
+
   // ── Navigation: reset & load ──────────────────────────
 
   function resetView() {
@@ -863,11 +916,13 @@
     filterActivated.checked = false;
     allSubAccounts = [];
     expandedIndexes.clear();
+    expandGeneration = {};
     mainAccountObj = null;
     singleAccountData = null;
     unsubscribeMasterAccount();
     unsubscribeAllSubs();
     unsubscribeSingleAccount();
+    updateUrlHash("");
   }
 
   async function loadAddress(l1Address) {
@@ -965,13 +1020,14 @@
   }
 
   function renderHistory(history) {
-    historyDatalist.innerHTML = history.map((a) => '<option value="' + a + '">').join("");
+    historyDatalist.innerHTML = history.map((a) => '<option value="' + esc(a) + '">').join("");
   }
 
   function doSearch() {
     const val = input.value.trim();
     if (!val) return;
     saveToHistory(val);
+    updateUrlHash(val);
 
     if (val.startsWith("0x")) {
       loadAddress(val);
@@ -1007,8 +1063,10 @@
       return;
     }
 
-    // Expand
+    // Expand — with race condition protection via generation counter
     expandedIndexes.add(index);
+    const gen = (expandGeneration[index] || 0) + 1;
+    expandGeneration[index] = gen;
     expandedColSpan = row.children.length;
     row.classList.add("expanded");
 
@@ -1032,19 +1090,22 @@
         const resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(index));
         if (!resp.ok) throw new Error("Failed to load");
         const data = await resp.json();
-        if (!expandedIndexes.has(index)) return;
+
+        // Race condition guard: check if expand is still current
+        if (!expandedIndexes.has(index) || expandGeneration[index] !== gen) return;
 
         loadingRow.outerHTML = renderDetailRow(data, colSpan, index);
 
         const detailAcc = data.accounts && data.accounts[0];
         if (sub && detailAcc) {
+          sub._cachedDetail = data;
           sub._hasPositions = hasRealPositions(detailAcc.positions);
           updateSubRowCells(index, sub);
         }
 
         subscribeSubAccount(index);
       } catch (err) {
-        if (!expandedIndexes.has(index)) return;
+        if (!expandedIndexes.has(index) || expandGeneration[index] !== gen) return;
         loadingRow.innerHTML = '<td colspan="' + colSpan + '"><div class="detail-panel detail-error">Failed to load account details</div></td>';
       }
     }
@@ -1068,6 +1129,7 @@
 
   filterZeroPos.addEventListener("change", () => {
     reRenderAllExpanded();
+
     const sa = getSingleAcc();
     if (sa) saContent.innerHTML = renderAccountContent(sa, sa.account_type === 0, sa.index);
   });
@@ -1102,9 +1164,15 @@
     if (e.key === "Enter") { e.preventDefault(); doSearch(); }
   });
 
+  // Handle browser back/forward for deep links
+  window.addEventListener("hashchange", () => {
+    loadFromUrlHash();
+  });
+
   // ── Init ──────────────────────────────────────────────
 
   renderHistory(loadHistory());
   updateSortIndicators();
   initWebSocket();
+  loadFromUrlHash();
 })();
