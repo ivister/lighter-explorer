@@ -43,6 +43,14 @@
   const logsExportFullBtn  = $("logs-export-full");
   const logsExportFullLabel = $("logs-export-full-label");
   const WS = window.LighterWS;
+  const StatusHelpers = window.LighterStatusHelpers;
+
+  if (!StatusHelpers) throw new Error("LighterStatusHelpers is not loaded.");
+
+  const hasBalance = StatusHelpers.hasBalance;
+  const hasRealPositions = StatusHelpers.hasRealPositions;
+  const isOpenPosition = StatusHelpers.isOpenPosition;
+  const getAccountStatus = StatusHelpers.getAccountStatus;
 
   // ── State ───────────────────────────────────────────────
   let allSubAccounts    = [];
@@ -128,27 +136,8 @@
       explorerBaseUrl + "/api/accounts/" + encodeURIComponent(accountId) + "/logs?limit=" + limit + "&offset=" + offset,
     ];
   }
-
-  function hasBalance(acc) {
-    return parseFloat(acc.collateral) > 0 || parseFloat(acc.available_balance) > 0;
-  }
-
-  function hasRealPositions(positions) {
-    if (!positions || !positions.length) return false;
-    return positions.some((p) => parseFloat(p.position_value) !== 0);
-  }
-
   function pnlClass(val) {
     return val === 0 ? "pnl-zero" : val > 0 ? "pnl-positive" : "pnl-negative";
-  }
-
-  // ── Account status helpers ─────────────────────────────
-
-  function getAccountStatus(acc) {
-    const hasBal = hasBalance(acc);
-    if (hasBal && acc._hasPositions) return "trading";
-    if (hasBal) return "check";
-    return "idle";
   }
 
   function accountStatusBadge(acc, skipCheck) {
@@ -409,7 +398,7 @@
     const showZero = filterZeroPos.checked;
     const positions = showZero
       ? (acc.positions || [])
-      : (acc.positions || []).filter((p) => parseFloat(p.position_value) !== 0);
+      : (acc.positions || []).filter(isOpenPosition);
 
     // Accumulate totals across positions
     const totals = { upnl: 0, notional: 0, margin: 0, hasLive: false };
