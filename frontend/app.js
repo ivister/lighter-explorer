@@ -43,6 +43,15 @@
   const logsExportFullBtn  = $("logs-export-full");
   const logsExportFullLabel = $("logs-export-full-label");
   const WS = window.LighterWS;
+  const StatusHelpers = window.LighterStatusHelpers;
+
+  if (!StatusHelpers) throw new Error("LighterStatusHelpers is not loaded.");
+
+  const hasBalance = StatusHelpers.hasBalance;
+  const hasRealPositions = StatusHelpers.hasRealPositions;
+  const isOpenPosition = StatusHelpers.isOpenPosition;
+  const getAccountStatus = StatusHelpers.getAccountStatus;
+  const shouldHydrateSubAccount = StatusHelpers.shouldHydrateSubAccount;
 
   // ── State ───────────────────────────────────────────────
   let allSubAccounts    = [];
@@ -63,6 +72,9 @@
   let singleTrackId     = null;
   let trackedSubs       = new Set();
   let expandGeneration  = {};       // { index: counter } for race condition
+  let viewGeneration    = 0;
+
+  const SUB_HYDRATE_CONCURRENCY = 6;
 
   let explorerBaseUrl   = "https://explorer.elliot.ai";
   let logsAccountId     = null;
@@ -128,27 +140,8 @@
       explorerBaseUrl + "/api/accounts/" + encodeURIComponent(accountId) + "/logs?limit=" + limit + "&offset=" + offset,
     ];
   }
-
-  function hasBalance(acc) {
-    return parseFloat(acc.collateral) > 0 || parseFloat(acc.available_balance) > 0;
-  }
-
-  function hasRealPositions(positions) {
-    if (!positions || !positions.length) return false;
-    return positions.some((p) => parseFloat(p.position_value) !== 0);
-  }
-
   function pnlClass(val) {
     return val === 0 ? "pnl-zero" : val > 0 ? "pnl-positive" : "pnl-negative";
-  }
-
-  // ── Account status helpers ─────────────────────────────
-
-  function getAccountStatus(acc) {
-    const hasBal = hasBalance(acc);
-    if (hasBal && acc._hasPositions) return "trading";
-    if (hasBal) return "check";
-    return "idle";
   }
 
   function accountStatusBadge(acc, skipCheck) {
@@ -214,6 +207,7 @@
     fillLiqPrices(posArr);
     acc.positions = posArr;
     acc._hasPositions = hasRealPositions(posArr);
+    acc._detailHydrated = true;
     return true;
   }
 
@@ -236,6 +230,65 @@
     if (s.cross_stats && s.cross_stats.portfolio_value !== undefined) {
       acc.cross_asset_value = s.cross_stats.portfolio_value;
     }
+  }
+
+  function mergeHydratedDetail(sub, data) {
+    const detailAcc = data.accounts && data.accounts[0];
+    if (!detailAcc) return false;
+
+    Object.assign(sub, detailAcc);
+    sub._hasPositions = hasRealPositions(detailAcc.positions);
+    sub._detailHydrated = true;
+    sub._cachedDetail = data;
+    return true;
+  }
+
+  async function fetchAccountDetail(index) {
+    const resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(index));
+    if (!resp.ok) throw new Error("Failed to load");
+    return resp.json();
+  }
+
+  function refreshMainSubSummary() {
+    if (!mainAccountObj) return;
+
+    const tradingSubs = allSubAccounts.filter((s) => getAccountStatus(s) === "trading").length;
+    const onlineSubs = allSubAccounts.filter((s) => s.status === 1).length;
+
+    setField("ma-active-subs", tradingSubs + " / " + allSubAccounts.length);
+    setField("ma-online", onlineSubs);
+  }
+
+  async function hydrateSubAccounts(gen) {
+    const targets = allSubAccounts.filter(shouldHydrateSubAccount);
+    if (targets.length === 0) return;
+
+    let cursor = 0;
+
+    async function worker() {
+      while (cursor < targets.length) {
+        const sub = targets[cursor++];
+        if (gen !== viewGeneration) return;
+        if (!sub || sub._detailHydrated) continue;
+
+        try {
+          const data = await fetchAccountDetail(sub.index);
+          if (gen !== viewGeneration) return;
+          if (!mergeHydratedDetail(sub, data)) continue;
+          updateSubRowCells(String(sub.index), sub);
+          reRenderDetail(String(sub.index));
+        } catch (err) {
+          // Keep the summary state; the row can still self-heal via manual expand + WS.
+        }
+      }
+    }
+
+    const workers = [];
+    const workerCount = Math.min(SUB_HYDRATE_CONCURRENCY, targets.length);
+    for (let i = 0; i < workerCount; i++) workers.push(worker());
+    await Promise.all(workers);
+
+    if (gen === viewGeneration) refreshMainSubSummary();
   }
 
   // ── Toast notifications (with deduplication) ───────────
@@ -409,7 +462,7 @@
     const showZero = filterZeroPos.checked;
     const positions = showZero
       ? (acc.positions || [])
-      : (acc.positions || []).filter((p) => parseFloat(p.position_value) !== 0);
+      : (acc.positions || []).filter(isOpenPosition);
 
     // Accumulate totals across positions
     const totals = { upnl: 0, notional: 0, margin: 0, hasLive: false };
@@ -494,9 +547,7 @@
   function renderMainAccount(acc, subs) {
     mainAccountObj = acc;
     acc._hasPositions = hasRealPositions(acc.positions);
-
-    const tradingSubs = subs.filter((s) => getAccountStatus(s) === "trading").length;
-    const onlineSubs = subs.filter((s) => s.status === 1).length;
+    acc._detailHydrated = true;
 
     setField("ma-index", copyableHtml(acc.index));
     setField("ma-status", statusHtml(acc, true));
@@ -506,8 +557,9 @@
     setField("ma-mode", tradingMode(acc.account_trading_mode));
     setField("ma-orders", esc(acc.total_order_count));
     setField("ma-pending", esc(acc.pending_order_count));
-    setField("ma-active-subs", tradingSubs + " / " + subs.length);
-    setField("ma-online", onlineSubs);
+    setField("ma-active-subs", "0 / " + subs.length);
+    setField("ma-online", "0");
+    refreshMainSubSummary();
     show(mainSection);
   }
 
@@ -581,9 +633,11 @@
 
   function updateSubRowCells(index, sub) {
     const row = getSubRow(index);
-    if (!row) return;
-    if (row.children[1]) row.children[1].innerHTML = statusHtml(sub);
-    if (row.children[2]) row.children[2].textContent = formatNumber(sub.total_asset_value, 6);
+    if (row) {
+      if (row.children[1]) row.children[1].innerHTML = statusHtml(sub);
+      if (row.children[2]) row.children[2].textContent = formatNumber(sub.total_asset_value, 6);
+    }
+    refreshMainSubSummary();
   }
 
   function reRenderDetail(index) {
@@ -1156,7 +1210,10 @@
       if (!sub._cachedDetail) sub._cachedDetail = { accounts: [sub] };
       const acc = sub._cachedDetail.accounts[0];
 
-      if (applyWsPositions(acc, msg)) sub._hasPositions = acc._hasPositions;
+      if (applyWsPositions(acc, msg)) {
+        sub._hasPositions = acc._hasPositions;
+        sub._detailHydrated = true;
+      }
       applyTradeStats(acc, msg);
 
       updateSubRowCells(index, sub);
@@ -1283,6 +1340,7 @@
   // ── Navigation: reset & load ──────────────────────────
 
   function resetView() {
+    viewGeneration += 1;
     input.value = "";
     hide(mainSection);
     hide(subSection);
@@ -1305,6 +1363,7 @@
   }
 
   async function loadAddress(l1Address) {
+    const loadGen = ++viewGeneration;
     hide(mainSection); hide(subSection); hide(singleSection); hide(errorEl);
     show(loadingEl);
     subSearch.value = "";
@@ -1323,6 +1382,7 @@
       }
 
       const data = await resp.json();
+      if (loadGen !== viewGeneration) return;
       const accounts = data.accounts || [];
       if (accounts.length === 0) throw new Error("No accounts found for address " + l1Address);
 
@@ -1330,7 +1390,8 @@
       subAccountMap.clear();
       allSubAccounts = accounts.filter((a) => a.account_type === 1).map((acc) => {
         acc._hasPositions = hasRealPositions(acc.positions);
-        acc._cachedDetail = { accounts: [acc] };
+        acc._detailHydrated = false;
+        acc._cachedDetail = null;
         subAccountMap.set(String(acc.index), acc);
         return acc;
       });
@@ -1344,15 +1405,18 @@
       updateSortIndicators();
       applyFilters();
       show(subSection);
+      void hydrateSubAccounts(loadGen);
     } catch (err) {
+      if (loadGen !== viewGeneration) return;
       errorEl.textContent = err.message;
       show(errorEl);
     } finally {
-      hide(loadingEl);
+      if (loadGen === viewGeneration) hide(loadingEl);
     }
   }
 
   async function loadAccountById(accountId) {
+    const loadGen = ++viewGeneration;
     hide(mainSection); hide(subSection); hide(singleSection); hide(errorEl);
     show(loadingEl);
 
@@ -1368,17 +1432,21 @@
       }
 
       const data = await resp.json();
+      if (loadGen !== viewGeneration) return;
       const accounts = data.accounts || [];
       if (accounts.length === 0) throw new Error("Account #" + accountId + " not found");
 
       singleAccountData = data;
+      accounts[0]._detailHydrated = true;
+      accounts[0]._hasPositions = hasRealPositions(accounts[0].positions);
       renderSingleAccount(accounts[0]);
       subscribeSingleAccount(accountId);
     } catch (err) {
+      if (loadGen !== viewGeneration) return;
       errorEl.textContent = err.message;
       show(errorEl);
     } finally {
-      hide(loadingEl);
+      if (loadGen === viewGeneration) hide(loadingEl);
     }
   }
 
@@ -1475,19 +1543,14 @@
       row.after(loadingRow);
 
       try {
-        const resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(index));
-        if (!resp.ok) throw new Error("Failed to load");
-        const data = await resp.json();
+        const data = await fetchAccountDetail(index);
 
         // Race condition guard: check if expand is still current
         if (!expandedIndexes.has(index) || expandGeneration[index] !== gen) return;
 
         loadingRow.outerHTML = renderDetailRow(data, colSpan, index);
 
-        const detailAcc = data.accounts && data.accounts[0];
-        if (sub && detailAcc) {
-          sub._cachedDetail = data;
-          sub._hasPositions = hasRealPositions(detailAcc.positions);
+        if (sub && mergeHydratedDetail(sub, data)) {
           updateSubRowCells(index, sub);
         }
 
