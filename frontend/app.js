@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.1.1";
+  const APP_VERSION = "0.1.2";
   const GITHUB_REPO = "ivister/lighter-explorer";
 
   // ── DOM references ──────────────────────────────────────
@@ -1873,18 +1873,18 @@
 
   const HISTORY_KEY_OLD = "lighter_l1_history";
   const HISTORY_KEY     = "lighter_search_history";
-  const VERSION_KEY     = "lighter_app_version";
+  const STORAGE_VER_KEY = "lighter_storage_ver";
+  const STORAGE_VER     = 2;   // bump when localStorage format changes
   const historyDropdown = $("history-dropdown");
   const MAX_HIST = 10;
 
-  // Reset localStorage on version change
-  (function migrateVersion() {
-    const stored = localStorage.getItem(VERSION_KEY);
-    if (stored !== APP_VERSION) {
+  // Reset localStorage only when storage format changes
+  (function migrateStorage() {
+    const stored = Number(localStorage.getItem(STORAGE_VER_KEY)) || 0;
+    if (stored < STORAGE_VER) {
       localStorage.removeItem(HISTORY_KEY);
       localStorage.removeItem(HISTORY_KEY_OLD);
-      localStorage.removeItem("lighter_dismissed_ver");
-      localStorage.setItem(VERSION_KEY, APP_VERSION);
+      localStorage.setItem(STORAGE_VER_KEY, String(STORAGE_VER));
     }
   })();
 
