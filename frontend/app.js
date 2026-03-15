@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.0.9";
+  const APP_VERSION = "0.1.0";
   const GITHUB_REPO = "ivister/lighter-explorer";
 
   // ── DOM references ──────────────────────────────────────
@@ -312,6 +312,12 @@
     return '<span class="copyable" data-copy="' + esc(value) + '" title="Click to copy">' + esc(value) + '</span>';
   }
 
+  function copyableShortAddr(addr) {
+    if (!addr) return "";
+    const short = shortAddr(addr);
+    return '<span class="copyable l1-badge mono" data-copy="' + esc(addr) + '" title="' + esc(addr) + '">' + esc(short) + '</span>';
+  }
+
   document.addEventListener("click", (e) => {
     const copyEl = e.target.closest(".copyable");
     if (!copyEl) return;
@@ -515,6 +521,8 @@
     const tradingSubs = subs.filter((s) => getAccountStatus(s) === "trading").length;
     const onlineSubs = subs.filter((s) => s.status === 1).length;
 
+    $("ma-header").innerHTML = 'Main Account <span class="badge badge-type">Main</span> ' +
+      (acc.l1_address ? copyableShortAddr(acc.l1_address) : '');
     setField("ma-index", copyableHtml(acc.index));
     setField("ma-status", statusHtml(acc, true));
     setField("ma-total-asset", formatNumber(acc.total_asset_value, 6));
@@ -557,6 +565,7 @@
     saHeader.innerHTML =
       'Account ' + copyableHtml('#' + acc.index) + ' ' +
       '<span class="badge badge-type">' + typeLabel + '</span> ' +
+      (acc.l1_address ? copyableShortAddr(acc.l1_address) + ' ' : '') +
       statusHtml(acc, skipCheck);
     saContent.innerHTML = renderAccountContent(acc, skipCheck, acc.index);
     show(singleSection);
@@ -850,6 +859,20 @@
     return { display: localStr, tooltip: utcStr };
   }
 
+  const LOG_STATUS_CSS = {
+    executed:            "log-status-ok",
+    nothing_to_execute:  "log-status-skip",
+    failed:              "log-status-fail",
+    pending:             "log-status-pending"
+  };
+
+  function logStatusBadge(status) {
+    if (!status) return "";
+    const cls = LOG_STATUS_CSS[status] || "log-status-other";
+    const label = status.replace(/_/g, " ");
+    return '<span class="badge badge-log ' + cls + '">' + esc(label) + '</span>';
+  }
+
   function renderLogRow(log) {
     const type = log.pubdata_type || log.tx_type || "Unknown";
     const time = formatLogTime(log.time);
@@ -869,7 +892,7 @@
       '<td style="white-space:nowrap" title="' + esc(time.tooltip) + '">' + esc(time.display) + '</td>' +
       '<td>' + badge + '</td>' +
       '<td>' + logDetails(log) + '</td>' +
-      '<td><span class="badge badge-log log-other">' + esc(log.status || "") + '</span></td>' +
+      '<td>' + logStatusBadge(log.status) + '</td>' +
     '</tr>';
   }
 
@@ -1788,6 +1811,7 @@
       if (main) {
         renderMainAccount(main, allSubAccounts);
         subscribeMasterAccount(main.index);
+        updateL1HistoryIndex(l1Address, main.index);
       }
 
       subCount.textContent = allSubAccounts.length;
@@ -1821,9 +1845,22 @@
       const accounts = data.accounts || [];
       if (accounts.length === 0) throw new Error("Account #" + accountId + " not found");
 
+      const acc = accounts[0];
+
+      // main account → redirect to full L1 view
+      if (acc.account_type === 0 && acc.l1_address) {
+        hide(loadingEl);
+        input.value = acc.l1_address;
+        updateUrlHash(acc.l1_address);
+        saveL1ToHistory(acc.l1_address);
+        loadAddress(acc.l1_address);
+        return;
+      }
+
       singleAccountData = data;
-      renderSingleAccount(accounts[0]);
+      renderSingleAccount(acc);
       subscribeSingleAccount(accountId);
+      saveIndexToHistory(accountId, acc.l1_address);
     } catch (err) {
       errorEl.textContent = err.message;
       show(errorEl);
@@ -1832,37 +1869,139 @@
     }
   }
 
-  // ── Address history (localStorage) ─────────────────────
+  // ── Search history (localStorage, grouped) ─────────────
 
-  const HISTORY_KEY = "lighter_l1_history";
-  const historyDatalist = $("l1-history");
+  const HISTORY_KEY_OLD = "lighter_l1_history";
+  const HISTORY_KEY     = "lighter_search_history";
+  const VERSION_KEY     = "lighter_app_version";
+  const historyDropdown = $("history-dropdown");
+  const MAX_HIST = 10;
+
+  // Reset localStorage on version change
+  (function migrateVersion() {
+    const stored = localStorage.getItem(VERSION_KEY);
+    if (stored !== APP_VERSION) {
+      localStorage.removeItem(HISTORY_KEY);
+      localStorage.removeItem(HISTORY_KEY_OLD);
+      localStorage.removeItem("lighter_dismissed_ver");
+      localStorage.setItem(VERSION_KEY, APP_VERSION);
+    }
+  })();
+
+  // L1 entries: { addr, index? }   Index entries: { id, l1? }
+
+  function shortAddr(a) { return a && a.length > 16 ? a.slice(0, 8) + "…" + a.slice(-6) : a || ""; }
 
   function loadHistory() {
-    try { return JSON.parse(localStorage.getItem(HISTORY_KEY)) || []; }
-    catch (e) { return []; }
+    try {
+      const raw = localStorage.getItem(HISTORY_KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        return { l1: Array.isArray(p.l1) ? p.l1 : [], index: Array.isArray(p.index) ? p.index : [] };
+      }
+    } catch { /* fall through */ }
+    // migrate old flat format
+    let old = [];
+    try { old = JSON.parse(localStorage.getItem(HISTORY_KEY_OLD)) || []; } catch { /* ignore */ }
+    const m = { l1: [], index: [] };
+    for (const e of old) {
+      if (typeof e === "string" && e.startsWith("0x")) m.l1.push({ addr: e });
+      else if (typeof e === "string" && /^\d+$/.test(e)) m.index.push({ id: e });
+    }
+    m.l1 = m.l1.slice(0, MAX_HIST);
+    m.index = m.index.slice(0, MAX_HIST);
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(m));
+    localStorage.removeItem(HISTORY_KEY_OLD);
+    return m;
   }
 
-  function saveToHistory(addr) {
-    let history = loadHistory().filter((a) => a !== addr);
-    history.unshift(addr);
-    if (history.length > 20) history = history.slice(0, 20);
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(history));
-    renderHistory(history);
+  function commitHistory(h) {
+    localStorage.setItem(HISTORY_KEY, JSON.stringify(h));
+    renderHistory(h);
   }
 
-  function renderHistory(history) {
-    historyDatalist.innerHTML = history.map((a) => '<option value="' + esc(a) + '">').join("");
+  function saveL1ToHistory(addr) {
+    const h = loadHistory();
+    h.l1 = h.l1.filter((e) => e.addr !== addr);
+    h.l1.unshift({ addr });
+    if (h.l1.length > MAX_HIST) h.l1 = h.l1.slice(0, MAX_HIST);
+    commitHistory(h);
   }
+
+  function updateL1HistoryIndex(addr, index) {
+    const h = loadHistory();
+    const entry = h.l1.find((e) => e.addr === addr);
+    if (entry) { entry.index = index; commitHistory(h); }
+  }
+
+  function saveIndexToHistory(id, l1) {
+    const h = loadHistory();
+    h.index = h.index.filter((e) => String(e.id) !== String(id));
+    h.index.unshift({ id: String(id), l1: l1 || undefined });
+    if (h.index.length > MAX_HIST) h.index = h.index.slice(0, MAX_HIST);
+    commitHistory(h);
+  }
+
+  function removeFromHistory(val, group) {
+    const h = loadHistory();
+    if (group === "l1") h.l1 = h.l1.filter((e) => e.addr !== val);
+    else h.index = h.index.filter((e) => String(e.id) !== String(val));
+    commitHistory(h);
+    if (!h.l1.length && !h.index.length) hideHistory();
+  }
+
+  function renderHistory(h) {
+    if (!h.l1.length && !h.index.length) { historyDropdown.innerHTML = ""; return; }
+    let html = "";
+    if (h.l1.length) {
+      html += '<div class="history-group"><div class="history-group-header">L1 Addresses</div>';
+      for (const e of h.l1) {
+        const hint = e.index != null ? ' <span class="history-item-idx">(#' + esc(String(e.index)) + ')</span>' : '';
+        const label = esc(e.addr) + hint;
+        html += '<div class="history-item" data-value="' + esc(e.addr) + '" data-group="l1">'
+              + '<span class="history-item-text">' + label + '</span>'
+              + '<button class="history-item-remove" data-val="' + esc(e.addr) + '" data-group="l1" title="Remove">&times;</button></div>';
+      }
+      html += '</div>';
+    }
+    if (h.index.length) {
+      html += '<div class="history-group"><div class="history-group-header">Accounts</div>';
+      for (const e of h.index) {
+        const hint = e.l1 ? ' <span class="history-item-idx">(' + esc(shortAddr(e.l1)) + ')</span>' : '';
+        const label = '#' + esc(e.id) + hint;
+        html += '<div class="history-item" data-value="' + esc(e.id) + '" data-group="index">'
+              + '<span class="history-item-text">' + label + '</span>'
+              + '<button class="history-item-remove" data-val="' + esc(e.id) + '" data-group="index" title="Remove">&times;</button></div>';
+      }
+      html += '</div>';
+    }
+    historyDropdown.innerHTML = html;
+  }
+
+  function showHistory() {
+    const h = loadHistory();
+    if (!h.l1.length && !h.index.length) return;
+    renderHistory(h);
+    show(historyDropdown);
+  }
+
+  function hideHistory() { hide(historyDropdown); }
 
   function doSearch() {
     const val = input.value.trim();
     if (!val) return;
-    saveToHistory(val);
-    updateUrlHash(val);
+    hideHistory();
 
     if (/^[0-9a-fA-F]{40,80}$/.test(val) && !val.startsWith("0x")) {
+      updateUrlHash(val);
       openTxModal(val);
-    } else if (val.startsWith("0x")) {
+      return;
+    }
+
+    updateUrlHash(val);
+
+    if (val.startsWith("0x")) {
+      saveL1ToHistory(val);
       loadAddress(val);
     } else if (/^\d+$/.test(val)) {
       loadAccountById(val);
@@ -2018,6 +2157,19 @@
   form.addEventListener("submit", (e) => { e.preventDefault(); doSearch(); });
   input.addEventListener("keydown", (e) => {
     if (e.key === "Enter") { e.preventDefault(); doSearch(); }
+    else if (e.key === "Escape") { hideHistory(); input.blur(); }
+  });
+  input.addEventListener("focus", showHistory);
+  document.addEventListener("mousedown", (e) => {
+    if (!historyDropdown.contains(e.target) && e.target !== input) hideHistory();
+  });
+  historyDropdown.addEventListener("mousedown", (e) => {
+    e.preventDefault();                 // keep input focus, prevent blur
+    e.stopPropagation();                // prevent document listener from closing
+    const rm = e.target.closest(".history-item-remove");
+    if (rm) { removeFromHistory(rm.dataset.val, rm.dataset.group); return; }
+    const item = e.target.closest(".history-item");
+    if (item) { input.value = item.dataset.value; hideHistory(); doSearch(); }
   });
 
   // Logs modal
@@ -2098,6 +2250,31 @@
   // Handle browser back/forward for deep links
   window.addEventListener("hashchange", () => {
     loadFromUrlHash();
+  });
+
+  // ── Scroll-to-top button ─────────────────────────────────
+
+  const scrollBtn = $("scroll-top");
+  const logsContent = $("logs-content");
+  const SCROLL_THRESHOLD = 400;
+
+  function updateScrollBtn() {
+    // Check page scroll OR logs modal scroll
+    const logsOpen = !logsModal.classList.contains("hidden");
+    const scrollY = logsOpen ? logsContent.scrollTop : window.scrollY;
+    scrollBtn.classList.toggle("visible", scrollY > SCROLL_THRESHOLD);
+  }
+
+  window.addEventListener("scroll", updateScrollBtn, { passive: true });
+  logsContent.addEventListener("scroll", updateScrollBtn, { passive: true });
+
+  scrollBtn.addEventListener("click", () => {
+    const logsOpen = !logsModal.classList.contains("hidden");
+    if (logsOpen) {
+      logsContent.scrollTo({ top: 0, behavior: "smooth" });
+    } else {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   });
 
   // ── Settings ────────────────────────────────────────────

@@ -36,17 +36,16 @@
             placeholder="0x..., account ID, or tx hash"
             spellcheck="false"
             autocomplete="off"
-            list="l1-history"
           />
-          <datalist id="l1-history"></datalist>
           <button type="submit">Search</button>
         </div>
+        <div id="history-dropdown" class="history-dropdown hidden"></div>
       </form>
     </section>
 
     <!-- Main account card (L1 search) -->
     <section id="main-account" class="card hidden">
-      <h2>Main Account <span class="badge badge-type">Main</span></h2>
+      <h2 id="ma-header">Main Account <span class="badge badge-type">Main</span></h2>
       <div class="account-grid">
         <div class="field"><span class="label">Index</span><span id="ma-index" class="value mono">—</span></div>
         <div class="field"><span class="label">Status</span><span id="ma-status" class="value">—</span></div>
@@ -217,6 +216,7 @@
     </div>
   </div>
 
+  <button id="scroll-top" class="scroll-top-btn" title="Scroll to top">&#x2191; Back to top</button>
   <div id="toast-container"></div>
 
   <script src="/ws.js"></script>
