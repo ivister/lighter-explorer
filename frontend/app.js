@@ -1076,6 +1076,17 @@
 
   const ORDER_TYPES = { 0:"Limit", 1:"Market", 2:"Stop Loss", 3:"Stop Loss Limit", 4:"Take Profit", 5:"TP Limit", 6:"TWAP", 7:"TWAP Sub", 8:"Liquidation" };
   const TIF_LABELS  = { 0:"IOC", 1:"GoodTillTime", 2:"PostOnly" };
+  const ORDER_STATUSES = {
+    0:"InProgress", 1:"Pending", 2:"Active", 3:"Filled",
+    4:"Canceled", 5:"Canceled (PostOnly)", 6:"Canceled (ReduceOnly)",
+    7:"Canceled (PositionNotAllowed)", 8:"Canceled (MarginNotAllowed)",
+    9:"Canceled (TooMuchSlippage)", 10:"Canceled (NotEnoughLiquidity)",
+    11:"Canceled (SelfTrade)", 12:"Canceled (Expired)", 13:"Canceled (OCO)",
+    14:"Canceled (Child)", 15:"Canceled (Liquidation)", 16:"Canceled (InvalidBalance)"
+  };
+  const GROUPING_TYPES = { 0:"Default", 1:"OneTriggersTheOther", 2:"OneCancelsTheOther", 3:"OTO + OCO" };
+  const CANCEL_ALL_TIF = { 0:"Immediate", 1:"Scheduled", 2:"AbortScheduled" };
+  const MARGIN_DIR = { 0:"Remove", 1:"Add" };
 
   // helpers
   function txF(label, value, full) {
@@ -1086,8 +1097,17 @@
   }
   function txUsdcAmt(raw) { return (raw / 1e6).toFixed(2) + ' USDC'; }
   function pick(info, key, ev, abbr) {
-    return info[key] !== undefined ? info[key] : (ev && ev[abbr] !== undefined ? ev[abbr] : undefined);
+    if (Array.isArray(key)) {
+      for (const k of key) { if (info[k] !== undefined) return info[k]; }
+    } else {
+      if (info[key] !== undefined) return info[key];
+    }
+    return ev && ev[abbr] !== undefined ? ev[abbr] : undefined;
   }
+  function formatSide(isAsk) {
+    return isAsk === 0 ? '<span class="pnl-positive">Buy</span>' : '<span class="pnl-negative">Sell</span>';
+  }
+  function formatMarginMode(mm) { return mm === 0 ? "Cross" : "Isolated"; }
 
   // ── Hero section per tx type ───────────────────────
   function renderTxHero(tx, info, ev) {
@@ -1108,11 +1128,11 @@
     // CreateOrder / ModifyOrder / GroupedOrders (14,17,28)
     if (t === 14 || t === 17 || t === 28) {
       const isAsk = pick(info, "IsAsk", ev, "ia");
-      const side = isAsk === 0 ? '<span class="pnl-positive">Buy</span>' : '<span class="pnl-negative">Sell</span>';
+      const side = formatSide(isAsk);
       const mkt = pick(info, "MarketIndex", ev, "m");
       const price = pick(info, "Price", ev, "p");
-      const size = pick(info, "Size", ev, "s");
-      const ot = pick(info, "OrderType", ev, "ot");
+      const size = pick(info, ["Size","BaseAmount"], ev, "s");
+      const ot = pick(info, ["OrderType","Type"], ev, "ot");
       const otLabel = ot !== undefined ? ORDER_TYPES[ot] || ("Type " + ot) : "";
       const sym = mkt !== undefined ? marketSymbol(mkt) : "—";
       const action = t === 17 ? "Modify" : (t === 28 ? "Grouped" : otLabel || "Order");
@@ -1140,7 +1160,7 @@
       const amt = pick(info, "USDCAmount", ev, "c");
       const dir = pick(info, "Direction", ev, "d");
       const mkt = pick(info, "MarketIndex", ev, "m");
-      const dirLabel = dir === 0 ? '<span class="pnl-positive">+ Add</span>' : '<span class="pnl-negative">− Remove</span>';
+      const dirLabel = dir === 1 ? '<span class="pnl-positive">+ Add</span>' : '<span class="pnl-negative">− Remove</span>';
       return '<div class="tx-hero">' +
         '<div class="tx-hero-label">Update Margin</div>' +
         '<div class="tx-hero-value">' + dirLabel + ' ' + (amt !== undefined ? txUsdcAmt(amt) : '—') + '</div>' +
@@ -1156,7 +1176,7 @@
       return '<div class="tx-hero">' +
         '<div class="tx-hero-label">Update Leverage</div>' +
         '<div class="tx-hero-value">' + (mkt !== undefined ? esc(marketSymbol(mkt)) : '—') + '</div>' +
-        '<div class="tx-hero-sub">' + (mm !== undefined ? (mm === 0 ? 'Cross' : 'Isolated') : '') + (imf !== undefined ? ' &middot; IMF ' + esc(imf) : '') + '</div>' +
+        '<div class="tx-hero-sub">' + (mm !== undefined ? formatMarginMode(mm) : '') + (imf !== undefined ? ' &middot; IMF ' + esc(imf) : '') + '</div>' +
       '</div>';
     }
 
@@ -1225,41 +1245,116 @@
 
     // Order-specific
     if (t === 14 || t === 17 || t === 28 || t === 7) {
-      const ot = pick(info, "OrderType", ev, "ot");
+      const ot = info.OrderType !== undefined ? info.OrderType : (info.Type !== undefined ? info.Type : (ev && ev.ot !== undefined ? ev.ot : undefined));
       if (ot !== undefined) fields += txF("Order Type", esc(ORDER_TYPES[ot] || ot));
+      const mkt = pick(info, "MarketIndex", ev, "m");
+      if (mkt !== undefined) fields += txF("Market", esc(marketSymbol(mkt)));
+      const isAsk = pick(info, "IsAsk", ev, "ia");
+      if (isAsk !== undefined) fields += txF("Side", formatSide(isAsk));
+      const price = pick(info, "Price", ev, "p");
+      if (price !== undefined) fields += txF("Price", esc(price));
+      const size = info.Size !== undefined ? info.Size : (info.BaseAmount !== undefined ? info.BaseAmount : (ev && ev.s !== undefined ? ev.s : undefined));
+      if (size !== undefined) fields += txF("Size", esc(size));
       const tif = pick(info, "TimeInForce", ev, "f");
       if (tif !== undefined) fields += txF("Time in Force", esc(TIF_LABELS[tif] || tif));
       const ro = pick(info, "ReduceOnly", ev, "ro");
       if (ro !== undefined) fields += txF("Reduce Only", ro ? "Yes" : "No");
       const tp = pick(info, "TriggerPrice", ev, "tp");
       if (tp !== undefined && tp !== 0 && tp !== "0") fields += txF("Trigger Price", esc(tp));
-      if (ev.is !== undefined) fields += txF("Initial Size", esc(ev.is));
-      if (ev.rs !== undefined) fields += txF("Remaining Size", esc(ev.rs));
-      const oi = pick(info, "OrderIndex", ev, "i");
-      if (oi !== undefined) fields += txF("Order Index", '<span class="mono">' + esc(oi) + '</span>');
+      // Taker order details from event_info
+      const to = ev.to;
+      if (to) {
+        if (to.is !== undefined) fields += txF("Initial Size", esc(to.is));
+        if (to.rs !== undefined) fields += txF("Remaining Size", esc(to.rs));
+        if (to.st !== undefined) fields += txF("Order Status", esc(ORDER_STATUSES[to.st] || ("Status " + to.st)));
+        if (to.i !== undefined) fields += txF("Order Index", '<span class="mono">' + esc(to.i) + '</span>');
+        if (to.u !== undefined) fields += txF("Client Order ID", '<span class="mono">' + esc(to.u) + '</span>');
+        if (to.ts !== undefined && to.ts !== 0) fields += txF("Trigger Status", esc(to.ts));
+      } else {
+        if (ev.is !== undefined) fields += txF("Initial Size", esc(ev.is));
+        if (ev.rs !== undefined) fields += txF("Remaining Size", esc(ev.rs));
+        if (ev.st !== undefined) fields += txF("Order Status", esc(ORDER_STATUSES[ev.st] || ("Status " + ev.st)));
+      }
+      // Trade execution details
+      const trade = ev.t;
+      if (trade) {
+        if (trade.p !== undefined) fields += txF("Fill Price", esc(trade.p));
+        if (trade.s !== undefined) fields += txF("Fill Size", esc(trade.s));
+        if (trade.tf !== undefined) fields += txF("Taker Fee", esc(trade.tf));
+        if (trade.mf !== undefined) fields += txF("Maker Fee", esc(trade.mf));
+      }
+      // GroupingType for grouped orders
+      if (t === 28 && info.GroupingType !== undefined) {
+        fields += txF("Grouping", esc(GROUPING_TYPES[info.GroupingType] || info.GroupingType));
+      }
     }
 
     // Cancel-specific
     if (t === 15) {
-      const oi = pick(info, "OrderIndex", ev, "i");
-      if (oi !== undefined) fields += txF("Order Index", '<span class="mono">' + esc(oi) + '</span>');
+      const mkt = pick(info, "MarketIndex", ev, "m");
+      if (mkt !== undefined) fields += txF("Market", esc(marketSymbol(mkt)));
+      const idx = info.Index !== undefined ? info.Index : pick(info, "OrderIndex", ev, "i");
+      if (idx !== undefined) fields += txF("Order Index", '<span class="mono">' + esc(idx) + '</span>');
+      if (ev.ae && ev.ae !== "") fields += txF("Error", '<span style="color:var(--pnl-neg)">' + esc(ev.ae) + '</span>');
+    }
+
+    // CancelAllOrders-specific
+    if (t === 16) {
+      const catif = pick(info, "TimeInForce", ev, "f");
+      if (catif !== undefined) fields += txF("Cancel Mode", esc(CANCEL_ALL_TIF[catif] || catif));
+      if (info.Time !== undefined) fields += txF("Scheduled Time", esc(info.Time));
     }
 
     // Transfer-specific
     if (t === 12) {
-      const fee = info.USDCFee !== undefined ? info.USDCFee : ev.uf;
+      const from = pick(info, "FromAccountIndex", ev, "fa");
+      if (from !== undefined) fields += txF("From", txAccLink(from));
+      const toAcc = pick(info, "ToAccountIndex", ev, "ta");
+      if (toAcc !== undefined) fields += txF("To", txAccLink(toAcc));
+      const amt = pick(info, ["USDCAmount","Amount"], ev, "c");
+      if (amt !== undefined) fields += txF("Amount", txUsdcAmt(amt));
+      const fee = pick(info, ["USDCFee","Fee"], ev, "uf");
       if (fee !== undefined && fee !== 0) fields += txF("Fee", txUsdcAmt(fee));
-      const asset = info.AssetIndex;
-      if (asset !== undefined) fields += txF("Asset", esc(asset));
     }
 
-    // Margin/Leverage
-    if (t === 29) {
-      if (ev.mm !== undefined) fields += txF("Margin Mode", ev.mm === 0 ? "Cross" : "Isolated");
+    // Withdraw-specific
+    if (t === 13 || t === 6) {
+      const amt = pick(info, "USDCAmount", ev, "c");
+      if (amt !== undefined) fields += txF("Amount", txUsdcAmt(amt));
     }
+
+    // UpdateMargin
+    if (t === 29) {
+      const mkt = pick(info, "MarketIndex", ev, "m");
+      if (mkt !== undefined) fields += txF("Market", esc(marketSymbol(mkt)));
+      const dir = pick(info, "Direction", ev, "d");
+      if (dir !== undefined) fields += txF("Direction", esc(MARGIN_DIR[dir] || dir));
+      const amt = pick(info, "USDCAmount", ev, "c");
+      if (amt !== undefined) fields += txF("Amount", txUsdcAmt(amt));
+      if (ev.mm !== undefined) fields += txF("Margin Mode", formatMarginMode(ev.mm));
+    }
+
+    // UpdateLeverage
     if (t === 20) {
       const mkt = pick(info, "MarketIndex", ev, "m");
       if (mkt !== undefined) fields += txF("Market", esc(marketSymbol(mkt)));
+      const mm = pick(info, "MarginMode", ev, "mm");
+      if (mm !== undefined) fields += txF("Margin Mode", formatMarginMode(mm));
+      const imf = info.InitialMarginFraction !== undefined ? info.InitialMarginFraction : ev.imf;
+      if (imf !== undefined) fields += txF("Initial Margin Fraction", esc(imf));
+    }
+
+    // MintShares / BurnShares
+    if (t === 18 || t === 19 || t === 30) {
+      const pool = pick(info, "PublicPoolIndex", ev, "pp");
+      if (pool !== undefined) fields += txF("Pool Index", '<span class="mono">' + esc(pool) + '</span>');
+      const shares = pick(info, "ShareAmount", ev, "sa");
+      if (shares !== undefined) fields += txF("Share Amount", esc(shares));
+    }
+
+    // ChangePubKey
+    if (t === 8) {
+      if (info.PubKey) fields += txF("Public Key", '<span class="mono" style="font-size:0.72rem">' + esc(info.PubKey) + '</span>', true);
     }
 
     // Fees (top-level)
@@ -1292,10 +1387,10 @@
       if (mo || to) {
         const renderOrd = (ord, label) => {
           if (!ord) return "";
-          const side = ord.ia === 0 ? '<span class="pnl-positive">Buy</span>' : '<span class="pnl-negative">Sell</span>';
+          const side = formatSide(ord.ia);
           const ot = ORDER_TYPES[ord.ot] || ord.ot;
           const tif = TIF_LABELS[ord.f] || ord.f;
-          const st = ord.st === 2 ? "Filled" : (ord.st === 3 ? "Closed" : (ord.st === 1 ? "Open" : "st:" + ord.st));
+          const st = ORDER_STATUSES[ord.st] || ("st:" + ord.st);
           let r = '<div class="tx-section">' +
             '<div class="tx-section-title">' + label + '</div>' +
             '<div class="tx-grid">';
@@ -1308,7 +1403,9 @@
           if (ord.a !== undefined) r += txF("Account", txAccLink(ord.a));
           if (tif) r += txF("TIF", esc(tif));
           if (ord.i !== undefined) r += txF("Order ID", '<span class="mono">' + esc(ord.i) + '</span>');
+          if (ord.u !== undefined) r += txF("Client Order ID", '<span class="mono">' + esc(ord.u) + '</span>');
           if (ord.ro) r += txF("Reduce Only", "Yes");
+          if (ord.tp !== undefined && ord.tp !== 0) r += txF("Trigger Price", esc(ord.tp));
           r += '</div></div>';
           return r;
         };
@@ -1321,6 +1418,7 @@
   }
 
   let txRawVisible = false;
+  let txCopyTimer = null;
 
   function renderTxDetails(tx) {
     const hash = tx.hash || "";
@@ -1368,7 +1466,10 @@
 
     // ── Raw JSON toggle ──────────────────────────
     html += '<div class="tx-section" style="border-bottom:none">' +
+      '<div style="display:flex;gap:0.5rem;align-items:center">' +
       '<button class="btn-export tx-raw-toggle" style="font-size:0.75rem">{} JSON</button>' +
+      '<button class="btn-export tx-copy-json" style="font-size:0.75rem">Copy</button>' +
+      '</div>' +
       '<pre class="tx-raw-json' + (txRawVisible ? '' : ' hidden') + '">' +
       syntaxHighlight(tx) + '</pre>' +
     '</div>';
@@ -1416,6 +1517,7 @@
     hide(txLoading);
     currentTxData = null;
     txRawVisible = false;
+    if (txCopyTimer) { clearTimeout(txCopyTimer); txCopyTimer = null; }
   }
 
   // ── Logs CSV export ─────────────────────────────────────
@@ -2232,6 +2334,15 @@
     if (txLink) {
       e.preventDefault();
       openTxModal(txLink.dataset.hash);
+      return;
+    }
+    // Copy JSON
+    const copyBtn = e.target.closest(".tx-copy-json");
+    if (copyBtn && currentTxData) {
+      navigator.clipboard.writeText(JSON.stringify(currentTxData, null, 2)).then(() => {
+        copyBtn.textContent = "Copied!";
+        txCopyTimer = setTimeout(() => { copyBtn.textContent = "Copy"; txCopyTimer = null; }, 1500);
+      }).catch(() => { copyBtn.textContent = "Error"; setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500); });
       return;
     }
     // Raw JSON toggle
