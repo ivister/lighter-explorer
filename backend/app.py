@@ -140,6 +140,38 @@ async def get_markets():
     return data
 
 
+@app.get("/api/contracts")
+async def get_contracts():
+    """Return condensed contract/market specs (price_decimals, size_decimals) cached 10 min."""
+    cache_key = "_contracts_"
+    now = time.monotonic()
+    cached = _cache.get(cache_key)
+    if cached and now - cached[0] < 600:
+        return cached[1]
+
+    resp = await http_client.get("/api/v1/orderBookDetails?filter=all")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail="upstream error")
+
+    raw = resp.json()
+    result = []
+    for src in ("order_book_details", "spot_order_book_details"):
+        for m in raw.get(src) or []:
+            result.append({
+                "market_id":       m["market_id"],
+                "symbol":          m["symbol"],
+                "price_decimals":  m["price_decimals"],
+                "size_decimals":   m["size_decimals"],
+                "quote_decimals":  m.get("supported_quote_decimals", 6),
+                "min_base_amount": m.get("min_base_amount"),
+                "taker_fee":       m.get("taker_fee"),
+                "maker_fee":       m.get("maker_fee"),
+            })
+
+    _cache[cache_key] = (now, result)
+    return result
+
+
 @app.get("/api/account-logs/{param}")
 async def get_account_logs(
     param: str,

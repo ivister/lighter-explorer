@@ -90,6 +90,7 @@
   const logsCache       = {};   // { accountId: { data: [], allLoaded: bool } }
 
   let marketIndexMap    = {};   // { market_index: symbol }
+  let contractMap       = {};   // { market_id: {symbol, price_decimals, size_decimals, quote_decimals} }
 
   let settingTz    = localStorage.getItem("lighter_tz") || "local";
   let settingTheme = localStorage.getItem("lighter_theme") || "auto";
@@ -782,8 +783,84 @@
     } catch { /* ignore */ }
   }
 
+  async function fetchContracts() {
+    if (Object.keys(contractMap).length > 0) return;
+    try {
+      const data = await fetchJson("/api/contracts");
+      if (Array.isArray(data)) {
+        for (const m of data) {
+          contractMap[m.market_id] = m;
+          // Also fill marketIndexMap if not already populated
+          if (!marketIndexMap[m.market_id]) marketIndexMap[m.market_id] = m.symbol;
+        }
+      }
+    } catch { /* ignore */ }
+  }
+
   function marketSymbol(idx) {
-    return marketIndexMap[idx] || ("Mkt#" + idx);
+    return (contractMap[idx] && contractMap[idx].symbol) || marketIndexMap[idx] || ("Mkt#" + idx);
+  }
+
+  // Format raw integer price using market's price_decimals
+  function formatPrice(raw, mktIdx) {
+    if (raw === undefined || raw === null) return undefined;
+    const c = contractMap[mktIdx];
+    if (!c || !c.price_decimals) return String(raw);
+    const val = raw / Math.pow(10, c.price_decimals);
+    return val.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: c.price_decimals });
+  }
+
+  // Format raw integer size using market's size_decimals
+  function formatSize(raw, mktIdx) {
+    if (raw === undefined || raw === null) return undefined;
+    const c = contractMap[mktIdx];
+    if (!c) return String(raw);
+    const dec = c.size_decimals || 0;
+    const val = raw / Math.pow(10, dec);
+    return val.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: dec });
+  }
+
+  // Format USDC amount (6 decimals always)
+  function formatUsdc(raw) {
+    if (raw === undefined || raw === null) return undefined;
+    const val = raw / 1_000_000;
+    return val.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 }) + " USDC";
+  }
+
+  // raw value with human-readable in muted parens: "2312.00 (231200)"
+  function withRaw(human, raw) {
+    if (human === String(raw) || human === undefined) return esc(raw);
+    return esc(human) + ' <span class="tx-raw-hint">(' + esc(raw) + ')</span>';
+  }
+
+  // Price field: human-readable + raw
+  function fmtPx(raw, mktIdx) {
+    if (raw === undefined || raw === null || raw === 0) return undefined;
+    const h = formatPrice(raw, mktIdx);
+    return withRaw(h, raw);
+  }
+
+  // Size field: human-readable + raw
+  function fmtSz(raw, mktIdx) {
+    if (raw === undefined || raw === null) return undefined;
+    const h = formatSize(raw, mktIdx);
+    return withRaw(h, raw);
+  }
+
+  // Fee: raw USDC units (6 decimals) + formatted
+  function fmtFee(raw) {
+    if (raw === undefined || raw === null) return undefined;
+    const val = (raw / 1_000_000).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+    if (raw === 0) return esc(val) + ' USDC';
+    return esc(val) + ' USDC <span class="tx-raw-hint">(' + esc(raw) + ')</span>';
+  }
+
+  // IMF: MarginFractionTick = 10_000 → IMF / 10000 * 100 = %  → leverage = 10000/IMF
+  function fmtImf(raw) {
+    if (raw === undefined || raw === null || raw === 0) return undefined;
+    const pct = (raw / 100).toFixed(2) + "%";
+    const lev = (10000 / raw).toFixed(1) + "x";
+    return esc(pct + " / " + lev) + ' <span class="tx-raw-hint">(' + esc(raw) + ')</span>';
   }
 
   function logTypeBadge(pubdataType) {
@@ -955,7 +1032,7 @@
     logsAccountLabel.textContent = "#" + logsAccountId;
     show(logsModal);
     hide(logsExportBtn);
-    await fetchMarkets();
+    await fetchContracts();
 
     const cached = logsCache[logsAccountId];
     if (cached && cached.data.length > 0) {
@@ -1139,7 +1216,7 @@
       return '<div class="tx-hero">' +
         '<div class="tx-hero-label">' + esc(gtLabel) + (subOrders ? ' (' + esc(subOrders) + ')' : '') + '</div>' +
         '<div class="tx-hero-value">' + side + ' ' + esc(sym) + '</div>' +
-        (main.Price !== undefined ? '<div class="tx-hero-sub">@ ' + esc(main.Price) + (main.BaseAmount ? ' &times; ' + esc(main.BaseAmount) : '') + '</div>' : '') +
+        (main.Price !== undefined ? '<div class="tx-hero-sub">@ ' + (formatPrice(main.Price, mkt) || esc(main.Price)) + (main.BaseAmount ? ' &times; ' + (formatSize(main.BaseAmount, mkt) || esc(main.BaseAmount)) : '') + '</div>' : '') +
       '</div>';
     }
 
@@ -1157,7 +1234,7 @@
       return '<div class="tx-hero">' +
         '<div class="tx-hero-label">' + esc(action) + '</div>' +
         '<div class="tx-hero-value">' + side + ' ' + esc(sym) + '</div>' +
-        (price !== undefined ? '<div class="tx-hero-sub">@ ' + esc(price) + (size !== undefined ? ' &times; ' + esc(size) : '') + '</div>' : '') +
+        (price !== undefined ? '<div class="tx-hero-sub">@ ' + (formatPrice(price, mkt) || esc(price)) + (size !== undefined ? ' &times; ' + (formatSize(size, mkt) || esc(size)) : '') + '</div>' : '') +
       '</div>';
     }
 
@@ -1194,7 +1271,7 @@
       return '<div class="tx-hero">' +
         '<div class="tx-hero-label">Update Leverage</div>' +
         '<div class="tx-hero-value">' + (mkt !== undefined ? esc(marketSymbol(mkt)) : '—') + '</div>' +
-        '<div class="tx-hero-sub">' + (mm !== undefined ? formatMarginMode(mm) : '') + (imf !== undefined ? ' &middot; IMF ' + esc(imf) : '') + '</div>' +
+        '<div class="tx-hero-sub">' + (mm !== undefined ? formatMarginMode(mm) : '') + (imf !== undefined ? ' &middot; ' + (fmtImf(imf) || esc(imf)) : '') + '</div>' +
       '</div>';
     }
 
@@ -1238,7 +1315,7 @@
         return '<div class="tx-hero">' +
           '<div class="tx-hero-label">' + esc(label) + '</div>' +
           '<div class="tx-hero-value">' + side + (side ? ' ' : '') + esc(sym) + '</div>' +
-          '<div class="tx-hero-sub">@ ' + esc(trade.p) + ' &times; ' + esc(trade.s) + '</div>' +
+          '<div class="tx-hero-sub">@ ' + (formatPrice(trade.p, mkt) || esc(trade.p)) + ' &times; ' + (formatSize(trade.s, mkt) || esc(trade.s)) + '</div>' +
         '</div>';
       }
 
@@ -1257,6 +1334,37 @@
   }
 
   // ── Details section per tx type ────────────────────
+  // Build a collapsible counterparty section
+  function wrapCollapsible(label, innerHtml) {
+    return '<details class="tx-counterparty">' +
+      '<summary class="tx-counterparty-summary">' + esc(label) + '</summary>' +
+      '<div class="tx-counterparty-body">' + innerHtml + '</div>' +
+    '</details>';
+  }
+
+  // Build an order card's inner grid HTML (shared between expanded and collapsed)
+  function buildOrdGrid(ord, mkt) {
+    const side = formatSide(ord.ia);
+    const ot   = ORDER_TYPES[ord.ot] || ord.ot;
+    const tif  = TIF_LABELS[ord.f]   || ord.f;
+    const st   = ORDER_STATUSES[ord.st] || ("st:" + ord.st);
+    let g = '<div class="tx-grid">';
+    g += txF("Side", side);
+    g += txF("Order Type", esc(ot));
+    if (ord.p  !== undefined)               g += txF("Price",          fmtPx(ord.p,  mkt) || esc(ord.p));
+    g += txF("Status", esc(st));
+    if (ord.is !== undefined)               g += txF("Initial Size",   fmtSz(ord.is, mkt) || esc(ord.is));
+    if (ord.rs !== undefined)               g += txF("Remaining",      fmtSz(ord.rs, mkt) || esc(ord.rs));
+    if (ord.a  !== undefined)               g += txF("Account",        txAccLink(ord.a));
+    if (tif)                                g += txF("TIF",            esc(tif));
+    if (ord.i  !== undefined)               g += txF("Order ID",       '<span class="mono">' + esc(ord.i)  + '</span>');
+    if (ord.u  !== undefined)               g += txF("Client Order ID",'<span class="mono">' + esc(ord.u)  + '</span>');
+    if (ord.ro)                             g += txF("Reduce Only",    "Yes");
+    if (ord.tp !== undefined && ord.tp !==0) g += txF("Trigger Price",  fmtPx(ord.tp, mkt) || esc(ord.tp));
+    g += '</div>';
+    return g;
+  }
+
   function renderTxTypeDetails(tx, info, ev) {
     let fields = "";
     const t = tx.type;
@@ -1269,37 +1377,38 @@
       if (mkt !== undefined) fields += txF("Market", esc(marketSymbol(mkt)));
       const isAsk = pick(info, "IsAsk", ev, "ia");
       if (isAsk !== undefined) fields += txF("Side", formatSide(isAsk));
+      const mktForFmt = mkt;
       const price = pick(info, "Price", ev, "p");
-      if (price !== undefined) fields += txF("Price", esc(price));
+      if (price !== undefined) fields += txF("Price", fmtPx(price, mktForFmt) || esc(price));
       const size = info.Size !== undefined ? info.Size : (info.BaseAmount !== undefined ? info.BaseAmount : (ev && ev.s !== undefined ? ev.s : undefined));
-      if (size !== undefined) fields += txF("Size", esc(size));
+      if (size !== undefined) fields += txF("Size", fmtSz(size, mktForFmt) || esc(size));
       const tif = pick(info, "TimeInForce", ev, "f");
       if (tif !== undefined) fields += txF("Time in Force", esc(TIF_LABELS[tif] || tif));
       const ro = pick(info, "ReduceOnly", ev, "ro");
       if (ro !== undefined) fields += txF("Reduce Only", ro ? "Yes" : "No");
       const tp = pick(info, "TriggerPrice", ev, "tp");
-      if (tp !== undefined && tp !== 0 && tp !== "0") fields += txF("Trigger Price", esc(tp));
+      if (tp !== undefined && tp !== 0 && tp !== "0") fields += txF("Trigger Price", fmtPx(tp, mktForFmt) || esc(tp));
       // Taker order details from event_info
       const to = ev.to;
       if (to) {
-        if (to.is !== undefined) fields += txF("Initial Size", esc(to.is));
-        if (to.rs !== undefined) fields += txF("Remaining Size", esc(to.rs));
+        if (to.is !== undefined) fields += txF("Initial Size", fmtSz(to.is, mktForFmt) || esc(to.is));
+        if (to.rs !== undefined) fields += txF("Remaining Size", fmtSz(to.rs, mktForFmt) || esc(to.rs));
         if (to.st !== undefined) fields += txF("Order Status", esc(ORDER_STATUSES[to.st] || ("Status " + to.st)));
         if (to.i !== undefined) fields += txF("Order Index", '<span class="mono">' + esc(to.i) + '</span>');
         if (to.u !== undefined) fields += txF("Client Order ID", '<span class="mono">' + esc(to.u) + '</span>');
         if (to.ts !== undefined && to.ts !== 0) fields += txF("Trigger Status", esc(to.ts));
       } else {
-        if (ev.is !== undefined) fields += txF("Initial Size", esc(ev.is));
-        if (ev.rs !== undefined) fields += txF("Remaining Size", esc(ev.rs));
+        if (ev.is !== undefined) fields += txF("Initial Size", fmtSz(ev.is, mktForFmt) || esc(ev.is));
+        if (ev.rs !== undefined) fields += txF("Remaining Size", fmtSz(ev.rs, mktForFmt) || esc(ev.rs));
         if (ev.st !== undefined) fields += txF("Order Status", esc(ORDER_STATUSES[ev.st] || ("Status " + ev.st)));
       }
-      // Trade execution details
+      // Trade execution details — types 14/17/7: we are always the taker
       const trade = ev.t;
       if (trade) {
-        if (trade.p !== undefined) fields += txF("Fill Price", esc(trade.p));
-        if (trade.s !== undefined) fields += txF("Fill Size", esc(trade.s));
-        if (trade.tf !== undefined) fields += txF("Taker Fee", esc(trade.tf));
-        if (trade.mf !== undefined) fields += txF("Maker Fee", esc(trade.mf));
+        if (trade.p !== undefined) fields += txF("Fill Price", fmtPx(trade.p, mktForFmt) || esc(trade.p));
+        if (trade.s !== undefined) fields += txF("Fill Size", fmtSz(trade.s, mktForFmt) || esc(trade.s));
+        // Always show our fee (taker), even if 0
+        if (trade.tf !== undefined) fields += txF("Fee (Taker)", fmtFee(trade.tf));
       }
     }
 
@@ -1333,11 +1442,12 @@
         let r = '<div class="tx-section">';
         r += '<div class="tx-section-title">' + esc(label) + '</div>';
         r += '<div class="tx-grid">';
+        const ordMkt = ord.MarketIndex !== undefined ? ord.MarketIndex : mkt;
         r += txF("Side", formatSide(ord.IsAsk));
         r += txF("Order Type", esc(orderType));
-        if (ord.Price !== undefined) r += txF("Price", esc(ord.Price));
-        if (ord.BaseAmount !== undefined && ord.BaseAmount !== 0) r += txF("Size", esc(ord.BaseAmount));
-        if (ord.TriggerPrice !== undefined && ord.TriggerPrice !== 0) r += txF("Trigger Price", esc(ord.TriggerPrice));
+        if (ord.Price !== undefined) r += txF("Price", fmtPx(ord.Price, ordMkt) || esc(ord.Price));
+        if (ord.BaseAmount !== undefined && ord.BaseAmount !== 0) r += txF("Size", fmtSz(ord.BaseAmount, ordMkt) || esc(ord.BaseAmount));
+        if (ord.TriggerPrice !== undefined && ord.TriggerPrice !== 0) r += txF("Trigger Price", fmtPx(ord.TriggerPrice, ordMkt) || esc(ord.TriggerPrice));
         if (ord.TimeInForce !== undefined) r += txF("TIF", esc(TIF_LABELS[ord.TimeInForce] || ord.TimeInForce));
         if (ord.ReduceOnly) r += txF("Reduce Only", "Yes");
         if (ord.OrderExpiry && ord.OrderExpiry !== 0) r += txF("Expiry", esc(ord.OrderExpiry));
@@ -1358,24 +1468,24 @@
           let r = '<div class="tx-section">';
           r += '<div class="tx-section-title">Execution</div>';
           r += '<div class="tx-grid">';
-          if (trade.p !== undefined && trade.p !== 0) r += txF("Fill Price", esc(trade.p));
-          if (trade.s !== undefined && trade.s !== 0) r += txF("Fill Size", esc(trade.s));
-          if (trade.tf !== undefined) r += txF("Taker Fee", esc(trade.tf));
-          if (trade.mf !== undefined) r += txF("Maker Fee", esc(trade.mf));
+          if (trade.p !== undefined && trade.p !== 0) r += txF("Fill Price", fmtPx(trade.p, oeMkt) || esc(trade.p));
+          if (trade.s !== undefined && trade.s !== 0) r += txF("Fill Size", fmtSz(trade.s, oeMkt) || esc(trade.s));
+          // GroupedOrders submitter = taker — always show taker fee (even if 0)
+          if (trade.tf !== undefined) r += txF("Fee (Taker)", fmtFee(trade.tf));
           r += '</div></div>';
           sections2 += r;
         }
 
-        // Taker order (submitted order) state
+        // Taker order = viewer's order (always expanded)
         if (oeTo && oeTo.i) {
           let r = '<div class="tx-section">';
           r += '<div class="tx-section-title">Taker Order</div>';
           r += '<div class="tx-grid">';
           r += txF("Side", formatSide(oeTo.ia));
           r += txF("Order Type", esc(ORDER_TYPES[oeTo.ot] || oeTo.ot));
-          if (oeTo.p) r += txF("Price", esc(oeTo.p));
-          if (oeTo.is !== undefined) r += txF("Initial Size", esc(oeTo.is));
-          if (oeTo.rs !== undefined) r += txF("Remaining Size", esc(oeTo.rs));
+          if (oeTo.p) r += txF("Price", fmtPx(oeTo.p, oeMkt) || esc(oeTo.p));
+          if (oeTo.is !== undefined) r += txF("Initial Size", fmtSz(oeTo.is, oeMkt) || esc(oeTo.is));
+          if (oeTo.rs !== undefined) r += txF("Remaining Size", fmtSz(oeTo.rs, oeMkt) || esc(oeTo.rs));
           if (oeTo.st !== undefined) r += txF("Status", esc(ORDER_STATUSES[oeTo.st] || oeTo.st));
           if (oeTo.ts !== undefined && oeTo.ts !== 0) r += txF("Trigger Status", esc(oeTo.ts));
           if (oeTo.i) r += txF("Order Index", '<span class="mono">' + esc(oeTo.i) + '</span>');
@@ -1384,20 +1494,18 @@
           sections2 += r;
         }
 
-        // Maker order (counterparty)
+        // Maker order = counterparty (collapsed)
         if (oeMo && oeMo.i) {
-          let r = '<div class="tx-section">';
-          r += '<div class="tx-section-title">Maker Order</div>';
-          r += '<div class="tx-grid">';
-          r += txF("Side", formatSide(oeMo.ia));
-          if (oeMo.p) r += txF("Price", esc(oeMo.p));
-          if (oeMo.is !== undefined) r += txF("Initial Size", esc(oeMo.is));
-          if (oeMo.rs !== undefined) r += txF("Remaining Size", esc(oeMo.rs));
-          if (oeMo.st !== undefined) r += txF("Status", esc(ORDER_STATUSES[oeMo.st] || oeMo.st));
-          if (oeMo.a !== undefined) r += txF("Account", txAccLink(oeMo.a));
-          if (oeMo.i) r += txF("Order Index", '<span class="mono">' + esc(oeMo.i) + '</span>');
-          r += '</div></div>';
-          sections2 += r;
+          let inner = '<div class="tx-grid">';
+          inner += txF("Side", formatSide(oeMo.ia));
+          if (oeMo.p) inner += txF("Price", fmtPx(oeMo.p, oeMkt) || esc(oeMo.p));
+          if (oeMo.is !== undefined) inner += txF("Initial Size", fmtSz(oeMo.is, oeMkt) || esc(oeMo.is));
+          if (oeMo.rs !== undefined) inner += txF("Remaining Size", fmtSz(oeMo.rs, oeMkt) || esc(oeMo.rs));
+          if (oeMo.st !== undefined) inner += txF("Status", esc(ORDER_STATUSES[oeMo.st] || oeMo.st));
+          if (oeMo.a !== undefined) inner += txF("Account", txAccLink(oeMo.a));
+          if (oeMo.i) inner += txF("Order Index", '<span class="mono">' + esc(oeMo.i) + '</span>');
+          inner += '</div>';
+          sections2 += wrapCollapsible("Maker Order (counterparty)", inner);
         }
       }
 
@@ -1465,7 +1573,7 @@
       const mm = pick(info, "MarginMode", ev, "mm");
       if (mm !== undefined) fields += txF("Margin Mode", formatMarginMode(mm));
       const imf = info.InitialMarginFraction !== undefined ? info.InitialMarginFraction : ev.imf;
-      if (imf !== undefined) fields += txF("Initial Margin Fraction", esc(imf));
+      if (imf !== undefined) fields += txF("Initial Margin Fraction", fmtImf(imf) || esc(imf));
     }
 
     // MintShares / BurnShares
@@ -1485,12 +1593,24 @@
     if (ev.tf !== undefined && !ev.t) fields += txF("Taker Fee", esc(ev.tf));
     if (ev.mf !== undefined && !ev.t) fields += txF("Maker Fee", esc(ev.mf));
 
-    // Internal trade ops (21-27)
+    // Internal trade ops (21-27) — show only our fee based on role
     if (t >= 21 && t <= 27) {
       const trade = ev.t;
       if (trade) {
-        if (trade.tf !== undefined) fields += txF("Taker Fee", esc(trade.tf));
-        if (trade.mf !== undefined) fields += txF("Maker Fee", esc(trade.mf));
+        const viewerAcct = tx.account_index;
+        const toAcct = ev.to && ev.to.a;
+        const moAcct = ev.mo && ev.mo.a;
+        const isTaker = !viewerAcct || String(toAcct) === String(viewerAcct);
+        const isMaker = !isTaker && String(moAcct) === String(viewerAcct);
+        if (isTaker && trade.tf !== undefined) {
+          fields += txF("Fee (Taker)", fmtFee(trade.tf));
+        } else if (isMaker && trade.mf !== undefined) {
+          fields += txF("Fee (Maker)", fmtFee(trade.mf));
+        } else {
+          // Fallback: show both
+          if (trade.tf !== undefined) fields += txF("Taker Fee", fmtFee(trade.tf));
+          if (trade.mf !== undefined) fields += txF("Maker Fee", fmtFee(trade.mf));
+        }
       }
     }
 
@@ -1508,33 +1628,38 @@
     if (t >= 21 && t <= 27) {
       const mo = ev.mo;
       const to = ev.to;
+      const intMkt = ev.m !== undefined ? ev.m : (info.MarketIndex !== undefined ? info.MarketIndex : undefined);
+      const viewerAcct = tx.account_index;
+
       if (mo || to) {
-        const renderOrd = (ord, label) => {
+        // Determine which side belongs to the viewer
+        const toIsViewer = to && (viewerAcct === undefined || String(to.a) === String(viewerAcct));
+        const moIsViewer = mo && !toIsViewer && String(mo.a) === String(viewerAcct);
+
+        const renderOrdSection = (ord, label, collapsed) => {
           if (!ord) return "";
-          const side = formatSide(ord.ia);
-          const ot = ORDER_TYPES[ord.ot] || ord.ot;
-          const tif = TIF_LABELS[ord.f] || ord.f;
-          const st = ORDER_STATUSES[ord.st] || ("st:" + ord.st);
-          let r = '<div class="tx-section">' +
-            '<div class="tx-section-title">' + label + '</div>' +
-            '<div class="tx-grid">';
-          r += txF("Side", side);
-          r += txF("Order Type", esc(ot));
-          if (ord.p !== undefined) r += txF("Price", esc(ord.p));
-          r += txF("Status", esc(st));
-          if (ord.is !== undefined) r += txF("Initial Size", esc(ord.is));
-          if (ord.rs !== undefined) r += txF("Remaining", esc(ord.rs));
-          if (ord.a !== undefined) r += txF("Account", txAccLink(ord.a));
-          if (tif) r += txF("TIF", esc(tif));
-          if (ord.i !== undefined) r += txF("Order ID", '<span class="mono">' + esc(ord.i) + '</span>');
-          if (ord.u !== undefined) r += txF("Client Order ID", '<span class="mono">' + esc(ord.u) + '</span>');
-          if (ord.ro) r += txF("Reduce Only", "Yes");
-          if (ord.tp !== undefined && ord.tp !== 0) r += txF("Trigger Price", esc(ord.tp));
-          r += '</div></div>';
-          return r;
+          const grid = buildOrdGrid(ord, intMkt);
+          if (collapsed) {
+            return wrapCollapsible(label, grid);
+          }
+          return '<div class="tx-section">' +
+            '<div class="tx-section-title">' + esc(label) + '</div>' +
+            grid +
+          '</div>';
         };
-        sections += renderOrd(mo, "Maker Order");
-        sections += renderOrd(to, "Taker Order");
+
+        // Show viewer's side first (expanded), counterparty second (collapsed)
+        if (toIsViewer) {
+          sections += renderOrdSection(to, "Taker Order", false);
+          sections += renderOrdSection(mo, "Maker Order (counterparty)", true);
+        } else if (moIsViewer) {
+          sections += renderOrdSection(mo, "Maker Order", false);
+          sections += renderOrdSection(to, "Taker Order (counterparty)", true);
+        } else {
+          // Unknown — show both expanded
+          sections += renderOrdSection(mo, "Maker Order", false);
+          sections += renderOrdSection(to, "Taker Order", false);
+        }
       }
     }
 
@@ -1573,7 +1698,7 @@
     // ── Meta info ────────────────────────────────
     let meta = "";
     if (tx.account_index) meta += txF("Account", txAccLink(tx.account_index));
-    if (tx.l1_address) meta += txF("L1 Address", '<span class="mono" style="font-size:0.72rem">' + esc(tx.l1_address) + '</span>', true);
+    if (tx.l1_address) meta += txF("L1 Address", copyableShortAddr(tx.l1_address));
     if (tx.block_height) meta += txF("Block", Number(tx.block_height).toLocaleString());
     meta += txF("Time", '<span title="' + esc(time.tooltip) + '">' + esc(time.display) + '</span>');
     if (tx.nonce !== undefined) meta += txF("Nonce", esc(tx.nonce));
@@ -1588,14 +1713,12 @@
       '<div class="tx-grid">' + meta + '</div>' +
     '</div>';
 
-    // ── Raw JSON toggle ──────────────────────────
+    // ── Raw JSON button ──────────────────────────
     html += '<div class="tx-section" style="border-bottom:none">' +
       '<div class="tx-json-toolbar">' +
-      '<button class="btn-export tx-raw-toggle" style="font-size:0.75rem">{} JSON</button>' +
+      '<button class="btn-export tx-json-open" style="font-size:0.75rem">{} JSON</button>' +
       '<button class="btn-export tx-copy-json" style="font-size:0.75rem">⎘ Copy</button>' +
       '</div>' +
-      '<pre class="tx-raw-json' + (txRawVisible ? '' : ' hidden') + '">' +
-      syntaxHighlight(tx) + '</pre>' +
     '</div>';
 
     html += '</div>';
@@ -1616,7 +1739,7 @@
     currentTxData = null;
     txRawVisible = false;
 
-    await fetchMarkets();
+    await fetchContracts();
 
     try {
       const resp = await fetch("/api/tx?hash=" + encodeURIComponent(hash));
@@ -2434,6 +2557,58 @@
   $("logs-export-cancel").addEventListener("click", () => hide(logsExportModal));
   logsExportModal.addEventListener("click", (e) => { if (e.target === logsExportModal) hide(logsExportModal); });
 
+  // ── JSON fullscreen modal ─────────────────────────────
+  const jsonModal    = $("json-modal");
+  const jsonContent  = $("json-modal-content");
+  const jsonSearch   = $("json-search");
+  const jsonClose    = $("json-close");
+  let   jsonRawText  = "";
+
+  function openJsonModal(data) {
+    jsonRawText = JSON.stringify(data, null, 2);
+    jsonContent.innerHTML = syntaxHighlight(data);
+    jsonSearch.value = "";
+    jsonModal.classList.remove("hidden");
+    jsonSearch.focus();
+  }
+
+  function closeJsonModal() {
+    jsonModal.classList.add("hidden");
+    jsonSearch.value = "";
+    applyJsonSearch("");
+  }
+
+  function applyJsonSearch(term) {
+    if (!term) {
+      jsonContent.innerHTML = syntaxHighlight(JSON.parse(jsonRawText));
+      return;
+    }
+    // Highlight matching text inside already-highlighted HTML
+    const html = syntaxHighlight(JSON.parse(jsonRawText));
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp("(" + escaped + ")", "gi");
+    jsonContent.innerHTML = html.replace(re, '<mark class="json-search-hit">$1</mark>');
+    // Scroll to first hit
+    const first = jsonContent.querySelector(".json-search-hit");
+    if (first) first.scrollIntoView({ block: "center" });
+  }
+
+  jsonClose.addEventListener("click", closeJsonModal);
+  jsonModal.addEventListener("click", (e) => { if (e.target === jsonModal) closeJsonModal(); });
+
+  jsonSearch.addEventListener("input", () => applyJsonSearch(jsonSearch.value.trim()));
+
+  // Copy button inside JSON modal
+  jsonModal.addEventListener("click", (e) => {
+    if (e.target.closest(".json-modal-copy")) {
+      navigator.clipboard.writeText(jsonRawText).then(() => {
+        const btn = e.target.closest(".json-modal-copy");
+        const orig = btn.innerHTML; btn.innerHTML = "✓ Copied";
+        setTimeout(() => { btn.innerHTML = orig; }, 1500);
+      });
+    }
+  });
+
   // TX modal
   $("tx-close").addEventListener("click", closeTxModal);
   txModal.addEventListener("click", (e) => { if (e.target === txModal) closeTxModal(); });
@@ -2460,28 +2635,24 @@
       openTxModal(txLink.dataset.hash);
       return;
     }
-    // Copy JSON
+    // Copy JSON (from TX details toolbar)
     const copyBtn = e.target.closest(".tx-copy-json");
     if (copyBtn && currentTxData) {
-      navigator.clipboard.writeText(JSON.stringify(currentTxData, null, 2)).then(() => {
-        copyBtn.textContent = "Copied!";
-        txCopyTimer = setTimeout(() => { copyBtn.textContent = "Copy"; txCopyTimer = null; }, 1500);
-      }).catch(() => { copyBtn.textContent = "Error"; setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500); });
+      const txt = JSON.stringify(currentTxData, null, 2);
+      navigator.clipboard.writeText(txt).then(() => {
+        const orig = copyBtn.innerHTML; copyBtn.innerHTML = "✓ Copied";
+        txCopyTimer = setTimeout(() => { copyBtn.innerHTML = orig; txCopyTimer = null; }, 1500);
+      }).catch(() => { copyBtn.textContent = "Error"; setTimeout(() => { copyBtn.innerHTML = "⎘ Copy"; }, 1500); });
       return;
     }
-    // Raw JSON toggle
-    const rawBtn = e.target.closest(".tx-raw-toggle");
-    if (rawBtn) {
-      const pre = txDetails.querySelector(".tx-raw-json");
-      if (pre) {
-        txRawVisible = !txRawVisible;
-        pre.classList.toggle("hidden", !txRawVisible);
-      }
-    }
+    // Open JSON fullscreen modal
+    const jsonOpenBtn = e.target.closest(".tx-json-open");
+    if (jsonOpenBtn && currentTxData) { openJsonModal(currentTxData); return; }
   });
 
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (!jsonModal.classList.contains("hidden")) { closeJsonModal(); return; }
     if (!txModal.classList.contains("hidden")) { closeTxModal(); return; }
     if (!logsExportModal.classList.contains("hidden")) { hide(logsExportModal); return; }
     if (!settingsModal.classList.contains("hidden")) { hide(settingsModal); return; }
@@ -2649,6 +2820,7 @@
 
   renderHistory(loadHistory());
   updateSortIndicators();
+  fetchContracts();   // preload market specs (price/size decimals) in background
   initWebSocket();
   loadFromUrlHash();
   checkForUpdates();

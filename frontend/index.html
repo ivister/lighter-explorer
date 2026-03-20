@@ -201,6 +201,21 @@
     </div>
   </div>
 
+  <!-- JSON fullscreen modal -->
+  <div id="json-modal" class="json-modal-overlay hidden">
+    <div class="json-modal">
+      <div class="json-modal-header">
+        <span class="json-modal-title">{} JSON</span>
+        <div class="json-modal-actions">
+          <input id="json-search" class="json-search-input" type="text" placeholder="Search…" autocomplete="off" spellcheck="false">
+          <button class="btn-export json-modal-copy" style="font-size:0.8rem">⎘ Copy</button>
+          <button id="json-close" class="toast-close" style="font-size:1.3rem">&times;</button>
+        </div>
+      </div>
+      <pre id="json-modal-content" class="json-modal-pre"></pre>
+    </div>
+  </div>
+
   <!-- Transaction modal -->
   <div id="tx-modal" class="modal-overlay hidden">
     <div class="modal tx-modal">

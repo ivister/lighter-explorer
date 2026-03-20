@@ -1132,8 +1132,9 @@ tr.detail-row > td {
 
 .tx-modal-scroll {
   overflow-y: auto;
-  flex: 1;
+  overflow-x: hidden;
   padding: 0 1.25rem 1.25rem;
+  /* natural height, no flex: 1 — prevents empty space with short content */
 }
 
 /* ── TX card ──────────────────────────────────────────── */
@@ -1214,16 +1215,93 @@ tr.log-row[data-tx]:hover { background: var(--hover); }
   margin-bottom: 0.5rem;
   font-weight: 600;
 }
+/* tx-grid: 2-column label/value table layout — works at any width */
 .tx-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.4rem 1.5rem;
+  display: table;
+  width: 100%;
+  border-collapse: collapse;
 }
-.tx-grid .field { display: flex; flex-direction: row; justify-content: space-between; align-items: baseline; gap: 0.5rem; min-width: 0; }
-.tx-grid .label { color: var(--text-muted); font-size: 0.8rem; white-space: nowrap; font-weight: 400; flex-shrink: 0; }
-.tx-grid .value { font-size: 0.8rem; text-align: right; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; word-break: break-all; }
-.tx-grid .field.full { grid-column: 1 / -1; }
+.tx-grid .field {
+  display: table-row;
+}
+.tx-grid .label,
+.tx-grid .value {
+  display: table-cell;
+  padding: 0.22rem 0;
+  vertical-align: top;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+.tx-grid .label {
+  color: var(--text-muted);
+  font-weight: 400;
+  white-space: nowrap;
+  padding-right: 1rem;
+  width: 1%;          /* shrink-to-content */
+}
+.tx-grid .value {
+  font-weight: 500;
+  text-align: right;
+  word-break: break-word;
+  max-width: 0;       /* allows table-cell to use remaining space */
+  width: 99%;
+}
+/* Full-width: label spans both pseudo-columns via flex fallback */
+.tx-grid .field.full {
+  display: block;
+}
+.tx-grid .field.full .label {
+  display: block;
+  width: auto;
+  padding-right: 0;
+}
+.tx-grid .field.full .value {
+  display: block;
+  text-align: left;
+  word-break: break-all;
+  max-width: 100%;
+  width: 100%;
+  font-size: 0.72rem;
+}
 .tx-grid .mono { font-family: "SF Mono", "Fira Code", monospace; font-size: 0.72rem; }
+
+/* Collapsible counterparty section */
+.tx-counterparty {
+  border-top: 1px solid var(--border);
+  margin-top: 0.25rem;
+}
+
+.tx-counterparty-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.6rem 0;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tx-counterparty-summary::-webkit-details-marker { display: none; }
+
+.tx-counterparty-summary::before {
+  content: "▶";
+  font-size: 0.55rem;
+  transition: transform 0.15s;
+  flex-shrink: 0;
+}
+
+.tx-counterparty[open] > .tx-counterparty-summary::before {
+  transform: rotate(90deg);
+}
+
+.tx-counterparty-body {
+  padding-bottom: 0.5rem;
+}
 
 .tx-error-banner {
   background: rgba(248, 81, 73, 0.1);
@@ -1253,12 +1331,106 @@ tr.log-row[data-tx]:hover { background: var(--hover); }
   tab-size: 2;
 }
 
+/* ── JSON fullscreen modal ───────────────────────────── */
+
+.json-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.7);
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  z-index: 500;
+}
+
+.json-modal {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.json-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.json-modal-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-family: "SF Mono", monospace;
+  flex-shrink: 0;
+}
+
+.json-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+
+.json-search-input {
+  height: 1.9rem;
+  padding: 0 0.6rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.8rem;
+  width: 200px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.json-search-input:focus {
+  border-color: var(--accent);
+}
+
+.json-modal-pre {
+  flex: 1;
+  overflow: auto;
+  padding: 1rem 1.25rem;
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.65;
+  white-space: pre;
+  font-family: "SF Mono", "Fira Code", "Cascadia Code", monospace;
+  tab-size: 2;
+  background: var(--bg);
+}
+
+.json-search-hit {
+  background: rgba(210, 153, 34, 0.35);
+  border-radius: 2px;
+  color: inherit;
+}
+
+@media (max-width: 640px) {
+  .json-search-input { width: 130px; }
+  .json-modal-pre { font-size: 0.7rem; padding: 0.75rem; }
+}
+
 /* JSON toolbar */
 .tx-json-toolbar {
   display: flex;
   align-items: center;
   gap: 0.5rem;
   flex-wrap: wrap;
+}
+
+.tx-raw-hint {
+  color: var(--text-muted);
+  font-size: 0.78em;
+  font-weight: 400;
 }
 
 .json-key  { color: #c9a0ff; }
@@ -1328,8 +1500,8 @@ tr.log-row[data-tx]:hover { background: var(--hover); }
 
 /* ── Responsive / Mobile ──────────────────────────────── */
 
-@media (max-width: 600px) {
-  /* TX modal: slides up from bottom */
+@media (max-width: 640px) {
+  /* TX modal: slides up from bottom as sheet */
   .tx-modal {
     width: 100vw;
     max-width: 100vw;
@@ -1351,39 +1523,6 @@ tr.log-row[data-tx]:hover { background: var(--hover); }
   .tx-modal-header {
     padding: 0.85rem 1rem 0.65rem;
   }
-
-  /* Single column: label on top, value below */
-  .tx-grid {
-    grid-template-columns: 1fr;
-    gap: 0;
-  }
-
-  .tx-grid .field {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 0.1rem;
-    padding: 0.4rem 0;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .tx-grid .field:last-child { border-bottom: none; }
-
-  .tx-grid .label {
-    font-size: 0.68rem;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-
-  .tx-grid .value {
-    font-size: 0.82rem;
-    text-align: left;
-    word-break: break-all;
-    overflow: visible;
-    text-overflow: unset;
-    width: 100%;
-  }
-
-  .tx-grid .field.full { grid-column: 1; }
 
   /* Header hash truncation */
   .tx-hash-display {
@@ -1412,18 +1551,7 @@ tr.log-row[data-tx]:hover { background: var(--hover); }
   /* Settings/other modals */
   .settings-modal,
   .modal {
-    width: 94vw;
-    max-width: 94vw;
-  }
-}
-
-@media (min-width: 601px) and (max-width: 900px) {
-  .tx-modal {
-    width: min(580px, 94vw);
-  }
-
-  .tx-grid {
-    grid-template-columns: 1fr 1fr;
-    gap: 0.35rem 1rem;
+    width: 96vw;
+    max-width: 96vw;
   }
 }
