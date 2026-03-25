@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.1.2";
+  const APP_VERSION = "0.1.5";
   const GITHUB_REPO = "ivister/lighter-explorer";
 
   // ── DOM references ──────────────────────────────────────
@@ -16,7 +16,6 @@
   const subCount         = $("sub-count");
   const filterBalance    = $("filter-balance");
   const filterActivated  = $("filter-activated");
-  const filterZeroPos    = $("filter-zero-pos");
   const noResults        = $("no-results");
   const loadingEl        = $("loading");
   const errorEl          = $("error");
@@ -49,6 +48,7 @@
   const logsExportProgress = $("logs-export-progress");
   const logsExportFullBtn  = $("logs-export-full");
   const logsExportFullLabel = $("logs-export-full-label");
+  const headerVersion      = $("header-version");
   const WS = window.LighterWS;
   const StatusHelpers = window.LighterStatusHelpers;
 
@@ -70,6 +70,8 @@
   let marketData        = {};
   let marketRenderTimer = null;
   let marketDataReceived = false;
+  let marketStatsActive = false;  // track if market_stats/all is subscribed
+  let fundingTickTimer  = null;   // 1-second countdown tick
 
   let mainAccountObj    = null;
   let singleAccountData = null;
@@ -92,8 +94,9 @@
   let marketIndexMap    = {};   // { market_index: symbol }
   let contractMap       = {};   // { market_id: {symbol, price_decimals, size_decimals, quote_decimals} }
 
-  let settingTz    = localStorage.getItem("lighter_tz") || "local";
-  let settingTheme = localStorage.getItem("lighter_theme") || "auto";
+  let settingTz       = localStorage.getItem("lighter_tz") || "local";
+  let settingTheme    = localStorage.getItem("lighter_theme") || "auto";
+  let settingZeroPos  = localStorage.getItem("lighter_zero_pos") === "1";
 
   // ── Pure helpers ──────────────────────────────────────────
 
@@ -133,6 +136,31 @@
 
   function formatValue(val) {
     return (!val || val === "") ? "—" : esc(val);
+  }
+
+  const FUNDING_PERIOD_MS = 3600 * 1000; // 1 hour
+
+  function nextFundingMs(ts) {
+    if (!ts) return 0;
+    const tsMs = ts < 1e12 ? ts * 1000 : ts;
+    const now = Date.now();
+    if (tsMs > now) return tsMs;
+    const periods = Math.ceil((now - tsMs) / FUNDING_PERIOD_MS);
+    return tsMs + periods * FUNDING_PERIOD_MS;
+  }
+
+  function fmtCountdown(ts) {
+    const next = nextFundingMs(ts);
+    if (!next) return "";
+    const diff = next - Date.now();
+    if (diff <= 0) return "";
+    const totalSec = Math.floor(diff / 1000);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    if (h > 0) return h + "h " + String(m).padStart(2, "0") + "m";
+    if (m > 0) return m + "m " + String(s).padStart(2, "0") + "s";
+    return s + "s";
   }
 
   function formatNumber(val, decimals) {
@@ -390,6 +418,22 @@
       const fr = parseFloat(fundingRate);
       if (!isNaN(fr)) {
         fundingHtml = (fr * 100).toFixed(4) + '%';
+
+        // Estimated funding payment = rate × notional × direction
+        // Long (sign=1) pays when fr>0; Short (sign≠1) pays when fr<0
+        const posSign = p.sign === 1 ? 1 : -1;
+        const notional = mp && size ? mp * size : parseFloat(p.position_value) || 0;
+        if (notional > 0) {
+          const payment = fr * notional * posSign;
+          const absPayment = Math.abs(payment).toFixed(4);
+          const payClass = payment > 0 ? "funding-pay" : "funding-recv";
+          const paySign  = payment > 0 ? "−" : "+";
+          fundingHtml += ' <span class="funding-payment ' + payClass + '" title="Estimated funding payment">' +
+            paySign + absPayment + ' USDC</span>';
+        }
+
+        const countdown = fmtCountdown(mkt.funding_timestamp);
+        if (countdown) fundingHtml += ' <span class="funding-countdown">(' + esc(countdown) + ')</span>';
       }
     }
 
@@ -430,7 +474,7 @@
   function renderAccountContent(acc, skipCheck, refreshIndex) {
     if (acc._hasPositions === undefined) acc._hasPositions = hasRealPositions(acc.positions);
 
-    const showZero = filterZeroPos.checked;
+    const showZero = settingZeroPos;
     const positions = showZero
       ? (acc.positions || [])
       : (acc.positions || []).filter(isOpenPosition);
@@ -570,6 +614,7 @@
       statusHtml(acc, skipCheck);
     saContent.innerHTML = renderAccountContent(acc, skipCheck, acc.index);
     show(singleSection);
+    syncMarketStatsSub();
   }
 
   // ── Rendering: sub-accounts table ─────────────────────
@@ -633,6 +678,7 @@
     const subRow = getSubRow(index);
     if (subRow) subRow.classList.remove("expanded");
     expandedIndexes.delete(String(index));
+    syncMarketStatsSub();
   }
 
   // ── Sort logic ────────────────────────────────────────
@@ -2022,6 +2068,7 @@
           next_funding_rate: m.next_funding_rate,
           open_interest: m.open_interest,
           daily_volume: m.daily_quote_token_volume,
+          funding_timestamp: m.funding_timestamp,
         };
       }
     }
@@ -2058,6 +2105,38 @@
     heightFlashTimer = setTimeout(() => blockChip.classList.remove("chip-flash"), 600);
   }
 
+  // ── Market stats subscription management ─────────────
+  // Subscribe only when positions might be visible; pause when tab is hidden.
+
+  function needsMarketStats() {
+    // Need market data if: single account is shown, or any sub is expanded
+    const singleVisible = singleAccountData && !singleSection.classList.contains("hidden");
+    return singleVisible || expandedIndexes.size > 0;
+  }
+
+  function syncMarketStatsSub() {
+    if (document.hidden) {
+      // Tab is backgrounded — unsubscribe to save traffic
+      if (marketStatsActive) {
+        WS.unsubscribe("market_stats/all");
+        marketStatsActive = false;
+      }
+      return;
+    }
+    const needed = needsMarketStats();
+    if (needed && !marketStatsActive) {
+      WS.subscribe("market_stats/all", handleMarketStats);
+      marketStatsActive = true;
+      if (!fundingTickTimer) {
+        fundingTickTimer = setInterval(() => reRenderAllExpanded(), 1000);
+      }
+    } else if (!needed && marketStatsActive) {
+      WS.unsubscribe("market_stats/all");
+      marketStatsActive = false;
+      if (fundingTickTimer) { clearInterval(fundingTickTimer); fundingTickTimer = null; }
+    }
+  }
+
   // ── WS initialization ────────────────────────────────
 
   async function initWebSocket() {
@@ -2073,9 +2152,16 @@
       });
 
       if (config.explorer_url) explorerBaseUrl = config.explorer_url;
+
+      // Connect to our backend WS proxy (not directly to Lighter)
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      config.ws_url = proto + "//" + location.host + "/ws";
+
       WS.init(config);
-      WS.subscribe("market_stats/all", handleMarketStats);
+      // height always needed (header block counter)
       WS.subscribe("height", handleHeight);
+      // market_stats only when positions are visible
+      syncMarketStatsSub();
     } catch (e) {
       console.warn("WebSocket init failed:", e);
     }
@@ -2123,6 +2209,7 @@
     unsubscribeMasterAccount();
     unsubscribeAllSubs();
     unsubscribeSingleAccount();
+    syncMarketStatsSub();
     updateUrlHash("");
   }
 
@@ -2398,6 +2485,7 @@
 
     // Expand — with race condition protection via generation counter
     expandedIndexes.add(index);
+    syncMarketStatsSub();
     const gen = (expandGeneration[index] || 0) + 1;
     expandGeneration[index] = gen;
     expandedColSpan = row.children.length;
@@ -2464,12 +2552,6 @@
   filterBalance.addEventListener("change", applyFilters);
   filterActivated.addEventListener("change", applyFilters);
 
-  filterZeroPos.addEventListener("change", () => {
-    reRenderAllExpanded();
-
-    const sa = getSingleAcc();
-    if (sa) saContent.innerHTML = renderAccountContent(sa, sa.account_type === 0, sa.index);
-  });
 
   // Export modal
   $("btn-export-csv").addEventListener("click", showExportModal);
@@ -2712,6 +2794,9 @@
     settingsModal.querySelectorAll("[data-theme]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.theme === settingTheme);
     });
+    settingsModal.querySelectorAll("[data-zero-pos]").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.zeroPos === (settingZeroPos ? "1" : "0"));
+    });
   }
 
   applyTheme(settingTheme);
@@ -2731,7 +2816,7 @@
   $("settings-close").addEventListener("click", () => hide(settingsModal));
 
   settingsModal.addEventListener("click", (e) => {
-    const tzBtn = e.target.closest("[data-tz]");
+    const tzBtn = e.target.closest("button[data-tz]");
     if (tzBtn) {
       settingTz = tzBtn.dataset.tz;
       localStorage.setItem("lighter_tz", settingTz);
@@ -2740,12 +2825,22 @@
       rerenderTx();
       return;
     }
-    const themeBtn = e.target.closest("[data-theme]");
+    const themeBtn = e.target.closest("button[data-theme]");
     if (themeBtn) {
       settingTheme = themeBtn.dataset.theme;
       localStorage.setItem("lighter_theme", settingTheme);
       applyTheme(settingTheme);
       updateSettingsUI();
+      return;
+    }
+    const zeroPosBtn = e.target.closest("button[data-zero-pos]");
+    if (zeroPosBtn) {
+      settingZeroPos = zeroPosBtn.dataset.zeroPos === "1";
+      localStorage.setItem("lighter_zero_pos", settingZeroPos ? "1" : "0");
+      updateSettingsUI();
+      // Re-render currently visible account if any
+      const sa = getSingleAcc();
+      if (sa && !singleSection.classList.contains("hidden")) renderSingleAccount(sa);
       return;
     }
     // Close only on overlay click (not on inner modal content)
@@ -2818,10 +2913,14 @@
 
   // ── Init ──────────────────────────────────────────────
 
+  if (headerVersion) headerVersion.textContent = "v" + APP_VERSION;
   renderHistory(loadHistory());
   updateSortIndicators();
   fetchContracts();   // preload market specs (price/size decimals) in background
   initWebSocket();
   loadFromUrlHash();
   checkForUpdates();
+
+  // Pause market_stats stream when tab is hidden, resume on visibility
+  document.addEventListener("visibilitychange", () => syncMarketStatsSub());
 })();

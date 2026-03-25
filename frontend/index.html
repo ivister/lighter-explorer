@@ -11,6 +11,7 @@
   <header>
     <h1 id="app-title">Lighter Explorer</h1>
     <div class="header-info">
+      <span class="header-version" id="header-version"></span>
       <div class="header-chip" id="block-chip" title="Current blockchain height">
         <span class="chip-icon">&#x25A3;</span>
         <span class="chip-label">Block</span>
@@ -79,9 +80,6 @@
             </label>
             <label class="checkbox-label">
               <input type="checkbox" id="filter-activated" /> No positions
-            </label>
-            <label class="checkbox-label">
-              <input type="checkbox" id="filter-zero-pos" /> Show zero positions
             </label>
           </div>
           <button type="button" id="btn-export-csv" class="btn-export" title="Export all accounts to CSV">&#x2913; CSV</button>
@@ -177,6 +175,13 @@
           <button class="settings-opt" data-theme="auto">Auto</button>
           <button class="settings-opt" data-theme="light">Light</button>
           <button class="settings-opt" data-theme="dark">Dark</button>
+        </div>
+      </div>
+      <div class="settings-group">
+        <label class="settings-label">Zero Positions</label>
+        <div class="settings-options">
+          <button class="settings-opt" data-zero-pos="0">Hide</button>
+          <button class="settings-opt" data-zero-pos="1">Show</button>
         </div>
       </div>
     </div>
