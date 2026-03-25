@@ -45,14 +45,17 @@
   const txLoading        = $("tx-loading");
   const txError          = $("tx-error");
   const settingsModal    = $("settings-modal");
+  const trafficSaverToggle = $("traffic-saver-toggle");
   const logsExportModal    = $("logs-export-modal");
   const logsExportProgress = $("logs-export-progress");
   const logsExportFullBtn  = $("logs-export-full");
   const logsExportFullLabel = $("logs-export-full-label");
   const WS = window.LighterWS;
   const StatusHelpers = window.LighterStatusHelpers;
+  const TrafficSaver = window.LighterTrafficSaver;
 
   if (!StatusHelpers) throw new Error("LighterStatusHelpers is not loaded.");
+  if (!TrafficSaver) throw new Error("LighterTrafficSaver is not loaded.");
 
   const hasBalance = StatusHelpers.hasBalance;
   const hasRealPositions = StatusHelpers.hasRealPositions;
@@ -70,6 +73,7 @@
   let marketData        = {};
   let marketRenderTimer = null;
   let marketDataReceived = false;
+  let liveMarketCount   = 0;
 
   let mainAccountObj    = null;
   let singleAccountData = null;
@@ -94,6 +98,14 @@
 
   let settingTz    = localStorage.getItem("lighter_tz") || "local";
   let settingTheme = localStorage.getItem("lighter_theme") || "auto";
+  let settingTrafficSaver = localStorage.getItem("lighter_traffic_saver") === "1";
+  let wsConnected = false;
+  let wsInitialized = false;
+  let ambientSubscribed = false;
+  let appLiveState = "active";
+  let suppressNextConnectToast = false;
+  let trafficSaverController = null;
+  const SLEEP_DELAY_MS = TrafficSaver.DEFAULT_SLEEP_DELAY_MS || (5 * 60 * 1000);
 
   // ── Pure helpers ──────────────────────────────────────────
 
@@ -143,6 +155,41 @@
 
   function tradingMode(mode) {
     return mode === 1 ? "Unified" : "Classic";
+  }
+
+  function syncWsStatus() {
+    const isForeground = appLiveState === "active";
+    wsDot.classList.toggle("ws-connected", wsConnected && isForeground);
+
+    if (appLiveState === "sleeping") {
+      wsStatusText.textContent = "Sleeping";
+      return;
+    }
+    if (appLiveState === "quiet") {
+      wsStatusText.textContent = "Background";
+      return;
+    }
+    if (!wsInitialized) {
+      wsStatusText.textContent = "Disconnected";
+      return;
+    }
+    if (wsConnected) {
+      wsStatusText.textContent = liveMarketCount > 0 ? "Live \u00b7 " + liveMarketCount + " mkts" : "Live";
+      return;
+    }
+    wsStatusText.textContent = "Reconnecting...";
+  }
+
+  function clearLiveTimers() {
+    if (marketRenderTimer) {
+      clearTimeout(marketRenderTimer);
+      marketRenderTimer = null;
+    }
+    if (heightFlashTimer) {
+      clearTimeout(heightFlashTimer);
+      heightFlashTimer = null;
+    }
+    blockChip.classList.remove("chip-flash");
   }
 
   // ── Fetch with proxy fallback ──────────────────────────
@@ -633,6 +680,23 @@
     const subRow = getSubRow(index);
     if (subRow) subRow.classList.remove("expanded");
     expandedIndexes.delete(String(index));
+  }
+
+  function restoreExpandedRows(indexes) {
+    const restored = [];
+    for (const index of indexes) {
+      const key = String(index);
+      const row = getSubRow(key);
+      const sub = findSub(key);
+      if (!row || !sub || !sub._cachedDetail) continue;
+
+      row.classList.add("expanded");
+      const placeholder = document.createElement("tr");
+      row.after(placeholder);
+      placeholder.outerHTML = renderDetailRow(sub._cachedDetail, row.children.length, key);
+      restored.push(key);
+    }
+    expandedIndexes = new Set(restored);
   }
 
   // ── Sort logic ────────────────────────────────────────
@@ -2026,12 +2090,12 @@
       }
     }
 
-    const count = Object.keys(marketData).length;
-    if (count > 0) wsStatusText.textContent = "Live \u00b7 " + count + " mkts";
+    liveMarketCount = Object.keys(marketData).length;
+    syncWsStatus();
 
-    if (!marketDataReceived && count > 0) {
+    if (!marketDataReceived && liveMarketCount > 0) {
       marketDataReceived = true;
-      showToast("Market Data", count + " markets streaming", "success");
+      showToast("Market Data", liveMarketCount + " markets streaming", "success");
     }
 
     // Throttled re-render of expanded panels
@@ -2058,6 +2122,77 @@
     heightFlashTimer = setTimeout(() => blockChip.classList.remove("chip-flash"), 600);
   }
 
+  function subscribeAmbientChannels() {
+    if (ambientSubscribed) return;
+    ambientSubscribed = true;
+    WS.subscribe("market_stats/all", handleMarketStats);
+    WS.subscribe("height", handleHeight);
+    syncWsStatus();
+  }
+
+  function unsubscribeAmbientChannels() {
+    if (!ambientSubscribed) return;
+    ambientSubscribed = false;
+    liveMarketCount = 0;
+    WS.unsubscribe("market_stats/all");
+    WS.unsubscribe("height");
+    syncWsStatus();
+  }
+
+  function enterQuietMode() {
+    clearLiveTimers();
+    unsubscribeAmbientChannels();
+    syncWsStatus();
+  }
+
+  function exitQuietMode() {
+    subscribeAmbientChannels();
+    syncWsStatus();
+  }
+
+  function enterSleepMode() {
+    clearLiveTimers();
+    suppressNextConnectToast = true;
+    WS.sleep();
+    syncWsStatus();
+  }
+
+  function exitSleepMode() {
+    subscribeAmbientChannels();
+    suppressNextConnectToast = true;
+    WS.wake();
+    syncWsStatus();
+    refreshCurrentViewAfterWake();
+  }
+
+  function handleTrafficStateChange(nextState, prevState) {
+    appLiveState = nextState;
+
+    if (nextState === "quiet") {
+      enterQuietMode();
+      return;
+    }
+    if (prevState === "quiet" && nextState === "sleeping") {
+      enterSleepMode();
+      return;
+    }
+    if (prevState === "quiet" && nextState === "active") {
+      exitQuietMode();
+      return;
+    }
+    if (prevState === "sleeping" && nextState === "active") {
+      exitSleepMode();
+      return;
+    }
+
+    syncWsStatus();
+  }
+
+  function handlePageLifecycle() {
+    if (!trafficSaverController) return;
+    trafficSaverController.setHidden(document.hidden);
+  }
+
   // ── WS initialization ────────────────────────────────
 
   async function initWebSocket() {
@@ -2067,15 +2202,23 @@
       const config = await resp.json();
 
       WS.onStatusChange((isConnected) => {
-        wsDot.classList.toggle("ws-connected", isConnected);
-        wsStatusText.textContent = isConnected ? "Live" : "Reconnecting...";
-        if (isConnected) showToast("WebSocket", "Connected to Lighter", "success");
+        wsConnected = isConnected;
+        syncWsStatus();
+        if (!isConnected) return;
+        if (suppressNextConnectToast) {
+          suppressNextConnectToast = false;
+          return;
+        }
+        if (appLiveState === "active") {
+          showToast("WebSocket", "Connected to Lighter", "success");
+        }
       });
 
       if (config.explorer_url) explorerBaseUrl = config.explorer_url;
+      wsInitialized = true;
       WS.init(config);
-      WS.subscribe("market_stats/all", handleMarketStats);
-      WS.subscribe("height", handleHeight);
+      if (appLiveState === "active") subscribeAmbientChannels();
+      syncWsStatus();
     } catch (e) {
       console.warn("WebSocket init failed:", e);
     }
@@ -2132,6 +2275,7 @@
     subSearch.value = "";
     filterBalance.checked = false;
     filterActivated.checked = false;
+    singleAccountData = null;
 
     unsubscribeMasterAccount();
     unsubscribeAllSubs();
@@ -2178,6 +2322,7 @@
   async function loadAccountById(accountId) {
     hide(mainSection); hide(subSection); hide(singleSection); hide(errorEl);
     show(loadingEl);
+    mainAccountObj = null;
 
     unsubscribeMasterAccount();
     unsubscribeAllSubs();
@@ -2215,6 +2360,90 @@
       show(errorEl);
     } finally {
       hide(loadingEl);
+    }
+  }
+
+  function mergeAddressSnapshot(data) {
+    const accounts = data.accounts || [];
+    if (accounts.length === 0) return;
+
+    const prevExpanded = Array.from(expandedIndexes);
+    const prevSubs = new Map(subAccountMap);
+    const main = accounts.find((a) => a.account_type === 0);
+
+    subAccountMap.clear();
+    allSubAccounts = accounts.filter((a) => a.account_type === 1).map((acc) => {
+      const key = String(acc.index);
+      const prev = prevSubs.get(key);
+      acc._hasPositions = hasRealPositions(acc.positions);
+
+      if (prev && prev._cachedDetail && prev._cachedDetail.accounts && prev._cachedDetail.accounts[0]) {
+        Object.assign(prev._cachedDetail.accounts[0], acc);
+        acc._cachedDetail = prev._cachedDetail;
+      } else {
+        acc._cachedDetail = { accounts: [acc] };
+      }
+
+      subAccountMap.set(key, acc);
+      return acc;
+    });
+
+    if (main) {
+      renderMainAccount(main, allSubAccounts);
+      subscribeMasterAccount(main.index);
+    }
+
+    for (const key of Array.from(trackedSubs)) {
+      if (!subAccountMap.has(String(key))) unsubscribeSubAccount(key);
+    }
+
+    subCount.textContent = allSubAccounts.length;
+    updateSortIndicators();
+    applyFilters();
+    restoreExpandedRows(prevExpanded);
+    show(subSection);
+  }
+
+  async function refreshAddressSnapshot(l1Address) {
+    try {
+      const resp = await fetch("/api/account?by=l1_address&value=" + encodeURIComponent(l1Address));
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      mergeAddressSnapshot(await resp.json());
+    } catch (err) {
+      console.warn("Traffic saver refresh failed:", err);
+    }
+  }
+
+  async function refreshSingleSnapshot(accountId) {
+    try {
+      const resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(accountId));
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+
+      const data = await resp.json();
+      const accounts = data.accounts || [];
+      if (accounts.length === 0) return;
+
+      const acc = accounts[0];
+      if (acc.account_type === 0 && acc.l1_address) {
+        await refreshAddressSnapshot(acc.l1_address);
+        return;
+      }
+
+      singleAccountData = data;
+      renderSingleAccount(acc);
+      subscribeSingleAccount(accountId);
+    } catch (err) {
+      console.warn("Traffic saver refresh failed:", err);
+    }
+  }
+
+  function refreshCurrentViewAfterWake() {
+    if (!singleSection.classList.contains("hidden") && singleTrackId) {
+      refreshSingleSnapshot(singleTrackId);
+      return;
+    }
+    if (!mainSection.classList.contains("hidden") && mainAccountObj && mainAccountObj.l1_address) {
+      refreshAddressSnapshot(mainAccountObj.l1_address);
     }
   }
 
@@ -2712,6 +2941,7 @@
     settingsModal.querySelectorAll("[data-theme]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.theme === settingTheme);
     });
+    trafficSaverToggle.checked = settingTrafficSaver;
   }
 
   applyTheme(settingTheme);
@@ -2750,6 +2980,13 @@
     }
     // Close only on overlay click (not on inner modal content)
     if (e.target === settingsModal) hide(settingsModal);
+  });
+
+  trafficSaverToggle.addEventListener("change", () => {
+    settingTrafficSaver = trafficSaverToggle.checked;
+    localStorage.setItem("lighter_traffic_saver", settingTrafficSaver ? "1" : "0");
+    if (trafficSaverController) trafficSaverController.setEnabled(settingTrafficSaver);
+    updateSettingsUI();
   });
 
   // ── Version check ───────────────────────────────────────
@@ -2818,10 +3055,25 @@
 
   // ── Init ──────────────────────────────────────────────
 
+  trafficSaverController = TrafficSaver.createController({
+    sleepDelayMs: SLEEP_DELAY_MS,
+    onStateChange: handleTrafficStateChange,
+  });
+  trafficSaverController.setEnabled(settingTrafficSaver);
+  trafficSaverController.setHidden(document.hidden);
+
+  document.addEventListener("visibilitychange", handlePageLifecycle);
+  window.addEventListener("pagehide", () => {
+    if (!trafficSaverController) return;
+    trafficSaverController.setHidden(true);
+  });
+  window.addEventListener("pageshow", handlePageLifecycle);
+
   renderHistory(loadHistory());
   updateSortIndicators();
   fetchContracts();   // preload market specs (price/size decimals) in background
   initWebSocket();
+  syncWsStatus();
   loadFromUrlHash();
   checkForUpdates();
 })();

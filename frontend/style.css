@@ -1498,6 +1498,36 @@ tr.log-row[data-tx]:hover { background: var(--hover); }
   border-color: var(--accent);
 }
 
+.settings-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.settings-checkbox input {
+  margin-top: 0.15rem;
+  accent-color: var(--accent);
+}
+
+.settings-checkbox span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.settings-checkbox small {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+
 /* ── Responsive / Mobile ──────────────────────────────── */
 
 @media (max-width: 640px) {
