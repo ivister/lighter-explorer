@@ -8,6 +8,8 @@
   var reconnectDelay = 1000;
   var MAX_DELAY = 30000;
   var pingTimer = null;
+  var sleeping = false;
+  var intentionalClose = false;
 
   var subs = {};            // channel (with /) → callback
   var statusCallbacks = [];
@@ -17,7 +19,7 @@
   function init(config) {
     wsUrl = config.ws_url;
     if (!wsUrl) return;
-    connect();
+    if (!sleeping) connect();
   }
 
   function subscribe(channel, callback) {
@@ -38,6 +40,8 @@
   function destroy() {
     if (reconnectTimer) clearTimeout(reconnectTimer);
     stopPing();
+    sleeping = false;
+    intentionalClose = false;
     if (ws) {
       ws.onclose = null;
       ws.close();
@@ -52,6 +56,7 @@
 
   function connect() {
     if (!wsUrl) return;
+    if (sleeping) return;
     if (ws && (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)) return;
 
     ws = new WebSocket(wsUrl);
@@ -66,8 +71,14 @@
     };
 
     ws.onclose = function () {
+      ws = null;
       setConnected(false);
       stopPing();
+      if (intentionalClose) {
+        intentionalClose = false;
+        return;
+      }
+      if (sleeping) return;
       scheduleReconnect();
     };
 
@@ -75,6 +86,7 @@
   }
 
   function scheduleReconnect() {
+    if (sleeping) return;
     if (reconnectTimer) return;
     reconnectTimer = setTimeout(function () {
       reconnectTimer = null;
@@ -154,6 +166,28 @@
     }
   }
 
+  function sleep() {
+    sleeping = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    stopPing();
+    if (!ws) {
+      setConnected(false);
+      return;
+    }
+    intentionalClose = true;
+    ws.close();
+  }
+
+  function wake() {
+    sleeping = false;
+    intentionalClose = false;
+    if (connected) return;
+    connect();
+  }
+
   // ── Expose ──────────────────────────────────────────────
 
   window.LighterWS = {
@@ -162,5 +196,7 @@
     unsubscribe: unsubscribe,
     onStatusChange: onStatusChange,
     destroy: destroy,
+    sleep: sleep,
+    wake: wake,
   };
 })();
