@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.1.7";
+  const APP_VERSION = "0.1.8";
   const GITHUB_REPO = "ivister/lighter-explorer";
 
   // ── DOM references ──────────────────────────────────────
@@ -1407,10 +1407,13 @@
     if (ord.u  !== undefined)               g += txF("Client Order ID",'<span class="mono">' + esc(ord.u)  + '</span>');
     if (ord.ro)                             g += txF("Reduce Only",    "Yes");
     if (ord.tp !== undefined && ord.tp !==0) g += txF("Trigger Price",  fmtPx(ord.tp, mkt) || esc(ord.tp));
-    // Integrator fee
-    if (ord.ifci && (ord.itf || ord.imf)) {
-      const feeAmt = (ord.itf || 0) + (ord.imf || 0);
-      g += txF("Integrator Fee", fmtFee(feeAmt) + ' → ' + txAccLink(ord.ifci));
+    // Integrator fee — rate applied to filled notional (is * p * rate / 1e6)
+    if (ord.ifci) {
+      const rate = ord.ia ? (ord.itf || 0) : (ord.imf || 0); // taker=ask uses itf, maker uses imf
+      if (rate > 0 && ord.is !== undefined && ord.p !== undefined) {
+        const intFeeRaw = Math.round(ord.is * ord.p * rate / 1e6);
+        g += txF("Integrator Fee", fmtFee(intFeeRaw) + ' → ' + txAccLink(ord.ifci));
+      }
     }
     g += '</div>';
     return g;
@@ -1461,10 +1464,10 @@
         // Always show our fee (taker), even if 0
         if (trade.tf !== undefined) fields += txF("Fee (Taker)", fmtFee(trade.tf));
       }
-      // Integrator fee (from taker order)
-      if (to && to.ifci && (to.itf || to.imf)) {
-        const intFee = (to.itf || 0) + (to.imf || 0);
-        fields += txF("Integrator Fee", fmtFee(intFee) + ' → ' + txAccLink(to.ifci));
+      // Integrator fee — viewer is taker, rate = to.itf, applied to filled size * fill price
+      if (to && to.ifci && trade && to.itf !== undefined && to.itf > 0) {
+        const intFeeRaw = Math.round(trade.s * trade.p * to.itf / 1e6);
+        fields += txF("Integrator Fee", fmtFee(intFeeRaw) + ' → ' + txAccLink(to.ifci));
       }
     }
 
@@ -1660,8 +1663,20 @@
         const isMaker = !isTaker && String(moAcct) === String(viewerAcct);
         if (isTaker && trade.tf !== undefined) {
           fields += txF("Fee (Taker)", fmtFee(trade.tf));
+          // Integrator taker fee
+          const toOrd = ev.to;
+          if (toOrd && toOrd.ifci && toOrd.itf > 0) {
+            const intFeeRaw = Math.round(trade.s * trade.p * toOrd.itf / 1e6);
+            fields += txF("Integrator Fee", fmtFee(intFeeRaw) + ' → ' + txAccLink(toOrd.ifci));
+          }
         } else if (isMaker && trade.mf !== undefined) {
           fields += txF("Fee (Maker)", fmtFee(trade.mf));
+          // Integrator maker fee
+          const moOrd = ev.mo;
+          if (moOrd && moOrd.ifci && moOrd.imf > 0) {
+            const intFeeRaw = Math.round(trade.s * trade.p * moOrd.imf / 1e6);
+            fields += txF("Integrator Fee", fmtFee(intFeeRaw) + ' → ' + txAccLink(moOrd.ifci));
+          }
         } else {
           // Fallback: show both
           if (trade.tf !== undefined) fields += txF("Taker Fee", fmtFee(trade.tf));
