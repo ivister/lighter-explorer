@@ -26,7 +26,8 @@ LIGHTER_WS_URL = _ws_scheme + LIGHTER_BASE_URL.split("://", 1)[1].rstrip("/") + 
 # ── Simple in-memory cache ────────────────────────────────────────────
 
 _cache = {}       # key → (timestamp, data)
-CACHE_TTL = 5.0   # seconds
+CACHE_TTL = 5.0         # seconds — for single account lookups
+CACHE_TTL_L1 = 30.0     # seconds — for full L1 address fetches (expensive)
 
 http_client = None
 explorer_client = None
@@ -230,7 +231,7 @@ async def lifespan(app: FastAPI):
     global http_client, explorer_client, fallback_client
     http_client = httpx.AsyncClient(
         base_url=LIGHTER_BASE_URL,
-        timeout=15.0,
+        timeout=30.0,
         transport=httpx.AsyncHTTPTransport(retries=2),
     )
     explorer_client = httpx.AsyncClient(
@@ -295,6 +296,8 @@ async def get_config():
 async def get_account_detail(
     by: str = Query("index", description="'index' or 'l1_address'"),
     value: str = Query(..., description="Account index or L1 address"),
+    page: int = Query(0, ge=0, description="Enable paged mode: pass 1 for single upstream page, 0 for all"),
+    cursor: str = Query(None, description="Cursor for next page (l1_address paged mode)"),
 ):
     if by not in ("index", "l1_address"):
         raise HTTPException(status_code=400, detail="Invalid 'by' parameter. Use 'index' or 'l1_address'.")
@@ -303,18 +306,83 @@ async def get_account_detail(
     if by == "index" and not _INDEX_RE.match(value):
         raise HTTPException(status_code=400, detail="Invalid account index format.")
 
+    # Paged mode for l1_address: return single upstream page
+    if by == "l1_address" and page:
+        params = {"by": by, "value": value}
+        if cursor:
+            params["cursor"] = cursor
+        t0 = time.monotonic()
+        resp = await lighter_get("/api/v1/account", params=params)
+        t_upstream = time.monotonic() - t0
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=_lighter_error(resp))
+        raw_size = len(resp.content)
+        data = resp.json()
+        next_cursor = data.get("next_cursor") or data.get("cursor")
+        accounts = data.get("accounts") or []
+        logger.info(
+            "[perf] /account paged addr=%s cursor=%s accs=%d bytes=%d upstream=%.0fms has_more=%s",
+            value[:10] + "…",
+            (cursor[:20] + "…") if cursor else "-",
+            len(accounts),
+            raw_size,
+            t_upstream * 1000,
+            bool(next_cursor),
+        )
+        return {
+            "accounts": accounts,
+            "next_cursor": next_cursor,
+            "has_more": bool(next_cursor),
+        }
+
+    # Full fetch (cached)
     cache_key = f"{by}:{value}"
+    ttl = CACHE_TTL_L1 if by == "l1_address" else CACHE_TTL
     now = time.monotonic()
     cached = _cache.get(cache_key)
-    if cached and now - cached[0] < CACHE_TTL:
+    if cached and now - cached[0] < ttl:
         return cached[1]
 
-    resp = await lighter_get("/api/v1/account", params={"by": by, "value": value})
-    if resp.status_code != 200:
-        msg = _lighter_error(resp)
-        raise HTTPException(status_code=resp.status_code, detail=msg)
+    if by == "l1_address":
+        all_accounts: list = []
+        cur = None
+        page_num = 0
+        t_fetch_total = 0.0
+        bytes_total = 0
+        t_start_full = time.monotonic()
+        while True:
+            page_num += 1
+            params = {"by": by, "value": value}
+            if cur:
+                params["cursor"] = cur
+            t0 = time.monotonic()
+            resp = await lighter_get("/api/v1/account", params=params)
+            t_fetch_total += time.monotonic() - t0
+            if resp.status_code != 200:
+                raise HTTPException(status_code=resp.status_code, detail=_lighter_error(resp))
+            bytes_total += len(resp.content)
+            pg = resp.json()
+            accounts = pg.get("accounts") or []
+            all_accounts.extend(accounts)
+            cur = pg.get("next_cursor") or pg.get("cursor")
+            logger.info(
+                "[perf] /account FULL page=%d accs_this=%d accs_total=%d bytes=%d has_more=%s",
+                page_num, len(accounts), len(all_accounts), bytes_total, bool(cur),
+            )
+            if not cur:
+                break
+        logger.info(
+            "[perf] /account FULL DONE addr=%s pages=%d accs=%d bytes=%d fetch=%.0fms total=%.0fms",
+            value[:10] + "…", page_num, len(all_accounts), bytes_total,
+            t_fetch_total * 1000, (time.monotonic() - t_start_full) * 1000,
+        )
+        data = {"accounts": all_accounts}
+    else:
+        resp = await lighter_get("/api/v1/account", params={"by": by, "value": value})
+        if resp.status_code != 200:
+            raise HTTPException(status_code=resp.status_code, detail=_lighter_error(resp))
+        data = resp.json()
 
-    data = resp.json()
     _cache[cache_key] = (now, data)
 
     if len(_cache) > 500:
@@ -324,6 +392,50 @@ async def get_account_detail(
             del _cache[k]
 
     return data
+
+
+@app.get("/api/accounts-light")
+async def get_accounts_light(
+    l1_address: str = Query(..., description="L1 address"),
+    cursor: str = Query(None, description="Cursor for next page"),
+):
+    """Lightweight account list — no positions/assets, ~2x smaller payload."""
+    if not _ADDRESS_RE.match(l1_address):
+        raise HTTPException(status_code=400, detail="Invalid L1 address format.")
+    params = {"l1_address": l1_address}
+    if cursor:
+        params["cursor"] = cursor
+
+    t0 = time.monotonic()
+    resp = await lighter_get("/api/v1/accountsByL1Address", params=params)
+    t_upstream = time.monotonic() - t0
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=resp.status_code, detail=_lighter_error(resp))
+
+    raw_size = len(resp.content)
+    data = resp.json()
+    next_cursor = data.get("next_cursor")
+    accounts = data.get("sub_accounts") or []
+    t_total = time.monotonic() - t0
+
+    cursor_short = (cursor[:20] + "…") if cursor else "-"
+    logger.info(
+        "[perf] /accounts-light addr=%s cursor=%s accs=%d bytes=%d upstream=%.0fms total=%.0fms has_more=%s",
+        l1_address[:10] + "…",
+        cursor_short,
+        len(accounts),
+        raw_size,
+        t_upstream * 1000,
+        t_total * 1000,
+        bool(next_cursor),
+    )
+
+    return {
+        "accounts": accounts,
+        "next_cursor": next_cursor,
+        "has_more": bool(next_cursor),
+    }
 
 
 @app.get("/api/markets")

@@ -40,7 +40,13 @@
 
   function getAccountStatus(acc) {
     if (!acc || typeof acc !== "object") return "idle";
+    // Full data — use positions
     if (acc._hasPositions === true || hasRealPositions(acc.positions)) return "trading";
+    // Light data — status=1 means online, but only "trading" if has balance
+    if (acc._light) {
+      if (hasBalance(acc)) return acc.status === 1 ? "trading" : "check";
+      return "idle";
+    }
     if (hasBalance(acc)) return "check";
     return "idle";
   }

@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const APP_VERSION = "0.1.9";
+  const APP_VERSION = "0.2.0";
   const GITHUB_REPO = "ivister/lighter-explorer";
 
   // ── DOM references ──────────────────────────────────────
@@ -49,6 +49,9 @@
   const logsExportFullBtn  = $("logs-export-full");
   const logsExportFullLabel = $("logs-export-full-label");
   const headerVersion      = $("header-version");
+  const subLoadMore        = $("sub-load-more");
+  const subLoadStatus      = $("sub-load-status");
+  const btnLoadAll         = $("btn-load-all");
   const WS = window.LighterWS;
   const StatusHelpers = window.LighterStatusHelpers;
 
@@ -93,6 +96,25 @@
 
   let marketIndexMap    = {};   // { market_index: symbol }
   let contractMap       = {};   // { market_id: {symbol, price_decimals, size_decimals, quote_decimals} }
+
+  // Sub-account pagination state
+  let currentL1Address  = null;
+  let subNextCursor     = null;
+  let subAllLoaded      = false;
+  let isLoadingSubPage  = false;
+
+  // ── Virtualization state ──────────────────────────────────
+  // Fixed row height must match CSS: tr.sub-row { height: ROW_H px }
+  const ROW_H = 36;
+  const OVERSCAN = 12;              // rows rendered above/below viewport
+  const VIRTUAL_THRESHOLD = 400;    // use virtual rendering when > this many rows
+  let visibleRows        = [];      // current sorted+filtered array feeding the table
+  let visibleIndexMap    = new Map(); // String(accIndex) -> position in visibleRows
+  let virtualEnabled     = false;
+  let expandedDetailHeights = new Map(); // String(accIndex) -> measured detail row height in px
+  let scrollRaf          = null;
+  let lastWindowStart    = -1;
+  let lastWindowEnd      = -1;
 
   let settingTz       = localStorage.getItem("lighter_tz") || "local";
   let settingTheme    = localStorage.getItem("lighter_theme") || "auto";
@@ -171,6 +193,30 @@
 
   function tradingMode(mode) {
     return mode === 1 ? "Unified" : "Classic";
+  }
+
+  // ── Precomputed sort keys (hot path optimization) ─────
+  // Avoids per-compare parseFloat / getAccountStatus during sort on huge lists.
+  const SORT_FIELD_MAP = {
+    "_accountStatus":      "_sortStatus",
+    "total_asset_value":   "_sortAssetValue",
+    "total_order_count":   "_sortOrders",
+    "pending_order_count": "_sortPending",
+    "account_trading_mode": "_sortMode",
+    "index":               "_sortIndex",
+  };
+
+  function enrichSortKeys(acc) {
+    if (!acc || typeof acc !== "object") return;
+    const st = getAccountStatus(acc);
+    acc._sortStatus = st === "trading" ? 2 : st === "check" ? 1 : 0;
+    const tav = parseFloat(acc.total_asset_value);
+    const col = parseFloat(acc.collateral);
+    acc._sortAssetValue = !isNaN(tav) ? tav : (!isNaN(col) ? col : -Infinity);
+    acc._sortOrders  = +acc.total_order_count   || 0;
+    acc._sortPending = +acc.pending_order_count || 0;
+    acc._sortMode    = +acc.account_trading_mode || 0;
+    acc._sortIndex   = +acc.index || 0;
   }
 
   // ── Fetch with proxy fallback ──────────────────────────
@@ -412,29 +458,25 @@
       ? ' <span class="badge badge-isolated" title="Isolated margin · allocated ' + esc(p.allocated_margin) + '">Isolated</span>'
       : '';
 
-    // Funding rate display
+    // Funding rate display — show current accruing rate only
+    const cfr = parseFloat(mkt.current_funding_rate);
     let fundingHtml = "—";
-    if (fundingRate !== undefined && fundingRate !== null) {
-      const fr = parseFloat(fundingRate);
-      if (!isNaN(fr)) {
-        fundingHtml = (fr * 100).toFixed(4) + '%';
+    if (!isNaN(cfr)) {
+      fundingHtml = (cfr * 100).toFixed(4) + '%';
 
-        // Estimated funding payment = rate × notional × direction
-        // Long (sign=1) pays when fr>0; Short (sign≠1) pays when fr<0
-        const posSign = p.sign === 1 ? 1 : -1;
-        const notional = mp && size ? mp * size : parseFloat(p.position_value) || 0;
-        if (notional > 0) {
-          const payment = fr * notional * posSign;
-          const absPayment = Math.abs(payment).toFixed(4);
-          const payClass = payment > 0 ? "funding-pay" : "funding-recv";
-          const paySign  = payment > 0 ? "−" : "+";
-          fundingHtml += ' <span class="funding-payment ' + payClass + '" title="Estimated funding payment">' +
-            paySign + absPayment + ' USDC</span>';
-        }
-
-        const countdown = fmtCountdown(mkt.funding_timestamp);
-        if (countdown) fundingHtml += ' <span class="funding-countdown">(' + esc(countdown) + ')</span>';
+      const posSign = p.sign === 1 ? 1 : -1;
+      const notional = mp && size ? mp * size : parseFloat(p.position_value) || 0;
+      if (notional > 0) {
+        const payment = cfr * notional * posSign;
+        const absPayment = Math.abs(payment).toFixed(4);
+        const payClass = payment > 0 ? "funding-pay" : "funding-recv";
+        const paySign  = payment > 0 ? "−" : "+";
+        fundingHtml += ' <span class="funding-payment ' + payClass + '" title="Est. funding payment">' +
+          paySign + absPayment + ' USDC</span>';
       }
+
+      const countdown = fmtCountdown(mkt.funding_timestamp);
+      if (countdown) fundingHtml += ' <span class="funding-countdown">(' + esc(countdown) + ')</span>';
     }
 
     // ELP tooltip with formula
@@ -565,6 +607,8 @@
 
     const tradingSubs = subs.filter((s) => getAccountStatus(s) === "trading").length;
     const onlineSubs = subs.filter((s) => s.status === 1).length;
+    const subsTotal = subAllLoaded ? String(subs.length) : subs.length + "+";
+    const tradingLabel = tradingSubs + " / " + subsTotal;
 
     $("ma-header").innerHTML = 'Main Account <span class="badge badge-type">Main</span> ' +
       (acc.l1_address ? copyableShortAddr(acc.l1_address) : '');
@@ -576,7 +620,7 @@
     setField("ma-mode", tradingMode(acc.account_trading_mode));
     setField("ma-orders", esc(acc.total_order_count));
     setField("ma-pending", esc(acc.pending_order_count));
-    setField("ma-active-subs", tradingSubs + " / " + subs.length);
+    setField("ma-active-subs", tradingLabel);
     setField("ma-online", onlineSubs);
     show(mainSection);
   }
@@ -620,25 +664,220 @@
   // ── Rendering: sub-accounts table ─────────────────────
 
   function renderSubRow(acc) {
-    return '<tr class="sub-row" data-index="' + esc(acc.index) + '">' +
+    const tav = acc.total_asset_value !== undefined ? formatNumber(acc.total_asset_value, 6) : formatNumber(acc.collateral, 6);
+    const expanded = expandedIndexes.has(String(acc.index));
+    return '<tr class="sub-row' + (expanded ? ' expanded' : '') + '" data-index="' + esc(acc.index) + '">' +
       '<td class="mono">' + copyableHtml(acc.index) + '</td>' +
       '<td>' + statusHtml(acc) + '</td>' +
-      '<td>' + formatNumber(acc.total_asset_value, 6) + '</td>' +
+      '<td>' + tav + '</td>' +
       '<td>' + tradingMode(acc.account_trading_mode) + '</td>' +
       '<td>' + esc(acc.total_order_count) + '</td>' +
       '<td>' + esc(acc.pending_order_count) + '</td>' +
     '</tr>';
   }
 
-  function renderSubAccounts(accounts) {
-    expandedIndexes.clear();
+  function renderDetailLoadingRow(index) {
+    return '<tr class="detail-row" data-detail-for="' + esc(index) + '">' +
+      '<td colspan="' + expandedColSpan + '">' +
+      '<div class="detail-panel detail-loading"><div class="spinner"></div> Loading...</div>' +
+      '</td></tr>';
+  }
+
+  // Snapshot horizontal scroll positions of any expanded detail-row inner
+  // tables so they survive an innerHTML replace during re-render (otherwise
+  // users lose scrollLeft mid-interaction, e.g. during Load All pagination).
+  function snapshotDetailScroll() {
+    const snap = new Map();
+    if (expandedIndexes.size === 0) return snap;
+    const rows = subTbody.querySelectorAll('.detail-row[data-detail-for]');
+    for (let i = 0; i < rows.length; i++) {
+      const tr = rows[i];
+      const idx = tr.getAttribute('data-detail-for');
+      if (!idx) continue;
+      const wraps = tr.querySelectorAll('.table-wrap');
+      for (let j = 0; j < wraps.length; j++) {
+        const sl = wraps[j].scrollLeft;
+        if (sl > 0) snap.set(idx + ':' + j, sl);
+      }
+    }
+    return snap;
+  }
+
+  function restoreDetailScroll(snap) {
+    if (!snap || snap.size === 0) return;
+    snap.forEach((sl, key) => {
+      const sep = key.lastIndexOf(':');
+      const idx = key.slice(0, sep);
+      const j = +key.slice(sep + 1);
+      const tr = subTbody.querySelector('.detail-row[data-detail-for="' + idx + '"]');
+      if (!tr) return;
+      const wraps = tr.querySelectorAll('.table-wrap');
+      if (wraps[j]) wraps[j].scrollLeft = sl;
+    });
+  }
+
+  // Full-render path: used when rows <= VIRTUAL_THRESHOLD.
+  function renderSubAccountsFull(accounts) {
+    const t0 = performance.now();
     if (accounts.length === 0) {
       subTbody.innerHTML = "";
       show(noResults);
       return;
     }
     hide(noResults);
-    subTbody.innerHTML = accounts.map(renderSubRow).join("");
+    const tMap = performance.now();
+    const parts = [];
+    for (let i = 0; i < accounts.length; i++) {
+      const acc = accounts[i];
+      parts.push(renderSubRow(acc));
+      const idxStr = String(acc.index);
+      if (expandedIndexes.has(idxStr)) {
+        parts.push(acc._cachedDetail
+          ? renderDetailRow(acc._cachedDetail, expandedColSpan, acc.index)
+          : renderDetailLoadingRow(acc.index));
+      }
+    }
+    const html = parts.join("");
+    const tDom = performance.now();
+    const scrollSnap = snapshotDetailScroll();
+    subTbody.innerHTML = html;
+    restoreDetailScroll(scrollSnap);
+    const tEnd = performance.now();
+    if ((tEnd - t0) > 10) {
+      console.log("[perf] renderSubAccountsFull",
+        "rows=" + accounts.length,
+        "total=" + (tEnd - t0).toFixed(1) + "ms",
+        "build=" + (tDom - tMap).toFixed(1) + "ms",
+        "dom=" + (tEnd - tDom).toFixed(1) + "ms",
+        "htmlSize=" + Math.round(html.length / 1024) + "KB");
+    }
+  }
+
+  // ── Virtualization renderer ──────────────────────────────
+  // Only renders the slice of rows visible in the viewport + overscan.
+  // Scales to 100k+ rows with constant render cost.
+
+  function rebuildVisibleIndexMap() {
+    visibleIndexMap.clear();
+    for (let i = 0; i < visibleRows.length; i++) {
+      visibleIndexMap.set(String(visibleRows[i].index), i);
+    }
+  }
+
+  // Sum detail heights for expanded rows whose position lies in [from, to).
+  function sumDetailHeightsInRange(from, to) {
+    if (expandedIndexes.size === 0) return 0;
+    let sum = 0;
+    expandedIndexes.forEach((idx) => {
+      const pos = visibleIndexMap.get(idx);
+      if (pos === undefined) return;
+      if (pos < from || pos >= to) return;
+      sum += expandedDetailHeights.get(idx) || 0;
+    });
+    return sum;
+  }
+
+  function computeVirtualWindow() {
+    const N = visibleRows.length;
+    if (!N) return { start: 0, end: 0 };
+    const rect = subTbody.getBoundingClientRect();
+    const tableTop = rect.top + window.scrollY;
+    const viewTop = window.scrollY;
+    const viewBot = viewTop + window.innerHeight;
+    const relTop = Math.max(0, viewTop - tableTop);
+    const relBot = Math.max(0, viewBot - tableTop);
+    let start = Math.floor(relTop / ROW_H) - OVERSCAN;
+    let end   = Math.ceil(relBot / ROW_H)  + OVERSCAN;
+    if (start < 0) start = 0;
+    if (end > N) end = N;
+    if (end < start) end = start;
+    // Always render at least some rows so the table anchor is meaningful.
+    if (end === 0 && N > 0) end = Math.min(N, OVERSCAN * 2);
+    return { start, end };
+  }
+
+  function renderVirtualWindow() {
+    const t0 = performance.now();
+    const N = visibleRows.length;
+    if (N === 0) {
+      subTbody.innerHTML = "";
+      lastWindowStart = lastWindowEnd = 0;
+      show(noResults);
+      return;
+    }
+    hide(noResults);
+
+    const win = computeVirtualWindow();
+    const start = win.start, end = win.end;
+    const topRows = start;
+    const botRows = N - end;
+    const topDetailH = sumDetailHeightsInRange(0, start);
+    const botDetailH = sumDetailHeightsInRange(end, N);
+    const topPad = topRows * ROW_H + topDetailH;
+    const botPad = botRows * ROW_H + botDetailH;
+
+    const parts = [];
+    if (topPad > 0) {
+      parts.push('<tr class="v-spacer" aria-hidden="true"><td colspan="' + expandedColSpan + '" style="padding:0;border:0;height:' + topPad + 'px"></td></tr>');
+    }
+    for (let i = start; i < end; i++) {
+      const acc = visibleRows[i];
+      parts.push(renderSubRow(acc));
+      const idxStr = String(acc.index);
+      if (expandedIndexes.has(idxStr)) {
+        parts.push(acc._cachedDetail
+          ? renderDetailRow(acc._cachedDetail, expandedColSpan, acc.index)
+          : renderDetailLoadingRow(acc.index));
+      }
+    }
+    if (botPad > 0) {
+      parts.push('<tr class="v-spacer" aria-hidden="true"><td colspan="' + expandedColSpan + '" style="padding:0;border:0;height:' + botPad + 'px"></td></tr>');
+    }
+    const html = parts.join("");
+    const tDom = performance.now();
+    const scrollSnap = snapshotDetailScroll();
+    subTbody.innerHTML = html;
+    restoreDetailScroll(scrollSnap);
+    const tAfter = performance.now();
+
+    // Measure any newly rendered detail rows for accurate spacer math.
+    if (expandedIndexes.size > 0) {
+      for (let i = start; i < end; i++) {
+        const idxStr = String(visibleRows[i].index);
+        if (!expandedIndexes.has(idxStr)) continue;
+        const dRow = subTbody.querySelector('.detail-row[data-detail-for="' + idxStr + '"]');
+        if (dRow) {
+          const h = dRow.offsetHeight;
+          if (h > 0) expandedDetailHeights.set(idxStr, h);
+        }
+      }
+    }
+
+    lastWindowStart = start;
+    lastWindowEnd = end;
+
+    const tEnd = performance.now();
+    if ((tEnd - t0) > 5) {
+      console.log("[perf] renderVirtualWindow",
+        "win=[" + start + "," + end + ")/" + N,
+        "total=" + (tEnd - t0).toFixed(1) + "ms",
+        "dom=" + (tAfter - tDom).toFixed(1) + "ms",
+        "measure=" + (tEnd - tAfter).toFixed(1) + "ms",
+        "htmlSize=" + Math.round(html.length / 1024) + "KB");
+    }
+  }
+
+  function onVirtualScroll() {
+    if (!virtualEnabled) return;
+    if (scrollRaf) return;
+    scrollRaf = requestAnimationFrame(() => {
+      scrollRaf = null;
+      if (!virtualEnabled) return;
+      const win = computeVirtualWindow();
+      // Skip re-render if window hasn't meaningfully changed (cheap guard during rapid scroll).
+      if (win.start === lastWindowStart && win.end === lastWindowEnd) return;
+      renderVirtualWindow();
+    });
   }
 
   // ── Sub-row DOM helpers ───────────────────────────────
@@ -652,6 +891,9 @@
   }
 
   function updateSubRowCells(index, sub) {
+    // Keep sort keys fresh even if the row is currently outside the virtual
+    // window — next sort/filter must reflect latest WS state.
+    enrichSortKeys(sub);
     const row = getSubRow(index);
     if (!row) return;
     if (row.children[1]) row.children[1].innerHTML = statusHtml(sub);
@@ -673,36 +915,44 @@
   // ── Collapse helpers ──────────────────────────────────
 
   function collapseRow(index) {
-    const detailRow = getDetailRow(index);
-    if (detailRow) detailRow.remove();
-    const subRow = getSubRow(index);
-    if (subRow) subRow.classList.remove("expanded");
-    expandedIndexes.delete(String(index));
+    const idxStr = String(index);
+    expandedIndexes.delete(idxStr);
+    expandedDetailHeights.delete(idxStr);
+    if (virtualEnabled) {
+      renderVirtualWindow();
+    } else {
+      const detailRow = getDetailRow(index);
+      if (detailRow) detailRow.remove();
+      const subRow = getSubRow(index);
+      if (subRow) subRow.classList.remove("expanded");
+    }
     syncMarketStatsSub();
   }
 
   // ── Sort logic ────────────────────────────────────────
-
-  function getSortValue(acc, key) {
-    if (key === "_accountStatus") {
-      const st = getAccountStatus(acc);
-      return st === "trading" ? 2 : st === "check" ? 1 : 0;
-    }
-    const val = acc[key];
-    if (val === undefined || val === null || val === "") return -Infinity;
-    const num = Number(val);
-    return isNaN(num) ? val : num;
-  }
+  // Uses precomputed `_sort*` fields populated by enrichSortKeys().
+  // On 55k rows this reduces a ~3–5s sort to ~20–60ms.
 
   function sortAccounts(accounts) {
     if (!sortKey) return accounts;
-    return [...accounts].sort((a, b) => {
-      const va = getSortValue(a, sortKey);
-      const vb = getSortValue(b, sortKey);
-      if (va < vb) return sortAsc ? -1 : 1;
-      if (va > vb) return sortAsc ? 1 : -1;
-      return (parseFloat(b.total_asset_value) || 0) - (parseFloat(a.total_asset_value) || 0);
+    const t0 = performance.now();
+    const field = SORT_FIELD_MAP[sortKey] || sortKey;
+    const result = accounts.slice();
+    const mul = sortAsc ? 1 : -1;
+    result.sort((a, b) => {
+      const va = a[field];
+      const vb = b[field];
+      if (va < vb) return -1 * mul;
+      if (va > vb) return 1 * mul;
+      // Tie-break: larger asset value first (stable intuitive ordering).
+      const tavA = a._sortAssetValue || 0;
+      const tavB = b._sortAssetValue || 0;
+      if (tavA !== tavB) return tavB - tavA;
+      return 0;
     });
+    const dt = performance.now() - t0;
+    if (dt > 5) console.log("[perf] sortAccounts rows=" + accounts.length + " key=" + sortKey + " asc=" + sortAsc + " dt=" + dt.toFixed(1) + "ms");
+    return result;
   }
 
   function updateSortIndicators() {
@@ -715,6 +965,7 @@
   // ── Filter logic ──────────────────────────────────────
 
   function getFilteredSubs() {
+    const t0 = performance.now();
     const q = subSearch.value.trim();
     const onlyBalance = filterBalance.checked;
     const onlyNoPos = filterActivated.checked;
@@ -724,7 +975,18 @@
     if (onlyBalance) filtered = filtered.filter(hasBalance);
     if (onlyNoPos) filtered = filtered.filter((acc) => acc._hasPositions !== true);
 
-    return sortAccounts(filtered);
+    const tFilt = performance.now();
+    const sorted = sortAccounts(filtered);
+    const tEnd = performance.now();
+    if ((tEnd - t0) > 5) {
+      console.log("[perf] getFilteredSubs input=" + allSubAccounts.length +
+        " out=" + filtered.length +
+        " filter=" + (tFilt - t0).toFixed(1) + "ms" +
+        " sort=" + (tEnd - tFilt).toFixed(1) + "ms" +
+        " q=" + (q ? '"' + q + '"' : "-") +
+        " bal=" + onlyBalance + " nopos=" + onlyNoPos);
+    }
+    return sorted;
   }
 
   function hasActiveFilters() {
@@ -732,7 +994,24 @@
   }
 
   function applyFilters() {
-    renderSubAccounts(getFilteredSubs());
+    const t0 = performance.now();
+    visibleRows = getFilteredSubs();
+    rebuildVisibleIndexMap();
+    virtualEnabled = visibleRows.length > VIRTUAL_THRESHOLD;
+    updateLoadMoreBar();
+
+    if (visibleRows.length === 0) {
+      subTbody.innerHTML = "";
+      lastWindowStart = lastWindowEnd = 0;
+      show(noResults);
+    } else if (virtualEnabled) {
+      renderVirtualWindow();
+    } else {
+      renderSubAccountsFull(visibleRows);
+    }
+
+    const dt = performance.now() - t0;
+    if (dt > 50) console.log("[perf] applyFilters TOTAL " + dt.toFixed(1) + "ms virtual=" + virtualEnabled + " rows=" + visibleRows.length);
   }
 
   // ── CSV export ────────────────────────────────────────
@@ -1212,8 +1491,8 @@
   const MARGIN_DIR = { 0:"Remove", 1:"Add" };
 
   // helpers
-  function txF(label, value, full) {
-    return '<div class="field' + (full ? ' full' : '') + '"><span class="label">' + esc(label) + '</span><span class="value">' + value + '</span></div>';
+  function txF(label, value, full, title) {
+    return '<div class="field' + (full ? ' full' : '') + '"><span class="label"' + (title ? ' title="' + esc(title) + '"' : '') + '>' + esc(label) + '</span><span class="value">' + value + '</span></div>';
   }
   function txAccLink(index) {
     return '<a href="#" class="tx-account-link mono" data-index="' + esc(index) + '">#' + esc(index) + '</a>';
@@ -1346,27 +1625,44 @@
       '</div>';
     }
 
-    // Internal ops (21-27) — ClaimOrder, Deleverage, Liquidation, etc.
-    if (t >= 21 && t <= 27) {
+    // Deleverage (23) — special format: ba/da/q/s/li instead of t/to/mo
+    if (t === 23) {
       const mkt = pick(info, "MarketIndex", ev, "m");
-      const trade = ev.t;  // { p, s, tf, mf }
+      const sym = mkt !== undefined ? marketSymbol(mkt) : "—";
+      const size = info.Size !== undefined ? info.Size : ev.s;
+      const q = ev.q;
+      const effPrice = (q !== undefined && size) ? Math.round(q / size) : undefined;
+      return '<div class="tx-hero">' +
+        '<div class="tx-hero-label" style="color:var(--red)">&#x26A0; Deleverage</div>' +
+        '<div class="tx-hero-value">' + esc(sym) + '</div>' +
+        '<div class="tx-hero-sub">@ ' + (effPrice !== undefined ? (formatPrice(effPrice, mkt) || esc(effPrice)) : '—') +
+          ' &times; ' + (formatSize(size, mkt) || esc(size)) + '</div>' +
+      '</div>';
+    }
+
+    // Internal ops (21-27) — ClaimOrder, Liquidation, etc.
+    // For Liquidation (26), trade data is nested in ev.oe
+    if (t >= 21 && t <= 27) {
+      const oe = ev.oe || ev;  // unwrap oe for type 26
+      const mkt = pick(info, "MarketIndex", oe, "m");
+      const trade = oe.t;
       const label = TX_TYPES[t] || "Type " + t;
+      const isLiqHero = (t === 26);
 
       if (trade && trade.p !== undefined) {
-        // Has trade data — show as trade execution
-        const takerOrd = ev.to;
+        const takerOrd = oe.to;
         const isAsk = takerOrd ? takerOrd.ia : undefined;
         const side = isAsk === 0 ? '<span class="pnl-positive">Buy</span>' : (isAsk === 1 ? '<span class="pnl-negative">Sell</span>' : '');
         const sym = mkt !== undefined ? marketSymbol(mkt) : "—";
         return '<div class="tx-hero">' +
-          '<div class="tx-hero-label">' + esc(label) + '</div>' +
+          '<div class="tx-hero-label"' + (isLiqHero ? ' style="color:var(--red)"' : '') + '>' + (isLiqHero ? '&#x26A0; ' : '') + esc(label) + '</div>' +
           '<div class="tx-hero-value">' + side + (side ? ' ' : '') + esc(sym) + '</div>' +
           '<div class="tx-hero-sub">@ ' + (formatPrice(trade.p, mkt) || esc(trade.p)) + ' &times; ' + (formatSize(trade.s, mkt) || esc(trade.s)) + '</div>' +
         '</div>';
       }
 
       return '<div class="tx-hero">' +
-        '<div class="tx-hero-label">Internal</div>' +
+        '<div class="tx-hero-label"' + (isLiqHero ? ' style="color:var(--red)"' : '') + '>' + (isLiqHero ? '&#x26A0; ' : '') + esc(label) + '</div>' +
         '<div class="tx-hero-value">' + esc(label) + '</div>' +
         (mkt !== undefined ? '<div class="tx-hero-sub">' + esc(marketSymbol(mkt)) + '</div>' : '') +
       '</div>';
@@ -1652,37 +1948,96 @@
     if (ev.tf !== undefined && !ev.t) fields += txF("Taker Fee", esc(ev.tf));
     if (ev.mf !== undefined && !ev.t) fields += txF("Maker Fee", esc(ev.mf));
 
-    // Internal trade ops (21-27) — show only our fee based on role
-    if (t >= 21 && t <= 27) {
-      const trade = ev.t;
+    // Deleverage (23) — special structure
+    if (t === 23) {
+      const mkt = pick(info, "MarketIndex", ev, "m");
+      if (mkt !== undefined) fields += txF("Market", esc(marketSymbol(mkt)));
+      const size = info.Size !== undefined ? info.Size : ev.s;
+      if (size !== undefined) fields += txF("Size", fmtSz(size, mkt) || esc(size));
+      const q = ev.q;
+      if (q !== undefined) {
+        fields += txF("Quote Amount", fmtFee(q));
+      }
+      // Effective price
+      if (q !== undefined && size) {
+        const effPrice = Math.round(q / size);
+        fields += txF("Effective Price", fmtPx(effPrice, mkt) || esc(effPrice));
+      }
+      // Mark price at time of deleverage
+      const li = ev.li;
+      if (li && li.mp && li.mp[String(mkt)] !== undefined) {
+        fields += txF("Mark Price", fmtPx(li.mp[String(mkt)], mkt) || esc(li.mp[String(mkt)]));
+      }
+      // Accounts
+      const ba = info.BankruptAccountIndex || ev.ba;
+      const da = info.DeleveragerAccountIndex || ev.da;
+      const viewerAcct = tx.account_index;
+      if (ba !== undefined) fields += txF("Bankrupt Account", txAccLink(ba));
+      if (da !== undefined) fields += txF("Deleverager Account", txAccLink(da));
+      // Role
+      if (viewerAcct !== undefined) {
+        if (String(ba) === String(viewerAcct)) {
+          fields += txF("Your Role", '<span class="pnl-negative">Bankrupt (liquidated)</span>');
+        } else if (String(da) === String(viewerAcct)) {
+          fields += txF("Your Role", '<span class="pnl-negative">Deleverager (ADL\'d)</span>');
+        }
+      }
+      // Risk snapshot is shown as collapsible section below
+    }
+
+    // Internal trade ops (21-27, except 23=Deleverage) — show trade details and fee based on role
+    // For Liquidation (26), trade data is in ev.oe
+    if (t >= 21 && t <= 27 && t !== 23) {
+      const oe = ev.oe || ev; // unwrap for type 26
+      const intMktD = info.MarketIndex !== undefined ? info.MarketIndex : (oe.m !== undefined ? oe.m : undefined);
+      if (intMktD !== undefined) fields += txF("Market", esc(marketSymbol(intMktD)));
+      const trade = oe.t;
       if (trade) {
+        if (trade.p !== undefined) fields += txF("Fill Price", fmtPx(trade.p, intMktD) || esc(trade.p));
+        if (trade.s !== undefined) fields += txF("Fill Size", fmtSz(trade.s, intMktD) || esc(trade.s));
+        // Notional value
+        if (trade.p !== undefined && trade.s !== undefined && contractMap[intMktD]) {
+          const c = contractMap[intMktD];
+          const notional = (trade.p / Math.pow(10, c.price_decimals || 0)) * (trade.s / Math.pow(10, c.size_decimals || 0));
+          fields += txF("Notional", esc(notional.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })) + ' USDC');
+        }
+        // Mark price at liquidation (from li)
+        if (t === 26 && ev.li && ev.li.mp && ev.li.mp[String(intMktD)] !== undefined) {
+          fields += txF("Mark Price", fmtPx(ev.li.mp[String(intMktD)], intMktD) || esc(ev.li.mp[String(intMktD)]));
+        }
+        // Role
         const viewerAcct = tx.account_index;
-        const toAcct = ev.to && ev.to.a;
-        const moAcct = ev.mo && ev.mo.a;
+        const toAcct = oe.to && oe.to.a;
+        const moAcct = oe.mo && oe.mo.a;
         const isTaker = !viewerAcct || String(toAcct) === String(viewerAcct);
         const isMaker = !isTaker && String(moAcct) === String(viewerAcct);
+        // Role label for Liquidation
+        if (t === 26) {
+          if (isTaker) fields += txF("Your Role", '<span class="pnl-negative">Liquidated</span>');
+          else if (isMaker) fields += txF("Your Role", 'Counterparty');
+        }
+        // Fee
         if (isTaker && trade.tf !== undefined) {
           fields += txF("Fee (Taker)", fmtFee(trade.tf));
-          // Integrator taker fee
-          const toOrd = ev.to;
+          const toOrd = oe.to;
           if (toOrd && toOrd.ifci && toOrd.itf > 0) {
             const intFeeRaw = Math.round(trade.s * trade.p * toOrd.itf / 1e6);
             fields += txF("Integrator Fee", fmtFee(intFeeRaw) + ' → ' + txAccLink(toOrd.ifci));
           }
         } else if (isMaker && trade.mf !== undefined) {
           fields += txF("Fee (Maker)", fmtFee(trade.mf));
-          // Integrator maker fee
-          const moOrd = ev.mo;
+          const moOrd = oe.mo;
           if (moOrd && moOrd.ifci && moOrd.imf > 0) {
             const intFeeRaw = Math.round(trade.s * trade.p * moOrd.imf / 1e6);
             fields += txF("Integrator Fee", fmtFee(intFeeRaw) + ' → ' + txAccLink(moOrd.ifci));
           }
         } else {
-          // Fallback: show both
           if (trade.tf !== undefined) fields += txF("Taker Fee", fmtFee(trade.tf));
           if (trade.mf !== undefined) fields += txF("Maker Fee", fmtFee(trade.mf));
         }
       }
+      // Liquidation info stored for later (collapsible risk section)
+      // handled below after sections are built
     }
 
     if (!fields) { /* may still have order sections below */ }
@@ -1695,11 +2050,12 @@
       '</div>';
     }
 
-    // Maker / Taker order cards for internal ops
-    if (t >= 21 && t <= 27) {
-      const mo = ev.mo;
-      const to = ev.to;
-      const intMkt = info.MarketIndex !== undefined ? info.MarketIndex : (ev.m !== undefined ? ev.m : undefined);
+    // Maker / Taker order cards for internal ops (not Deleverage — it has no to/mo)
+    if (t >= 21 && t <= 27 && t !== 23) {
+      const oeCards = ev.oe || ev; // unwrap for type 26
+      const mo = oeCards.mo;
+      const to = oeCards.to;
+      const intMkt = info.MarketIndex !== undefined ? info.MarketIndex : (oeCards.m !== undefined ? oeCards.m : undefined);
       const viewerAcct = tx.account_index;
 
       if (mo || to) {
@@ -1719,19 +2075,75 @@
           '</div>';
         };
 
+        // Contextual labels for special types
+        // Contextual labels
+        let takerLabel, makerLabel, viewerMakerLabel;
+        if (t === 26) {
+          // Liquidation: taker=liquidated, maker=normal counterparty
+          takerLabel = "Liquidated Order";
+          makerLabel = "Maker Order";
+          viewerMakerLabel = "Maker Order";
+        } else {
+          takerLabel = "Taker Order";
+          makerLabel = "Maker Order";
+          viewerMakerLabel = "Maker Order";
+        }
+
         // Show viewer's side first (expanded), counterparty second (collapsed)
         if (toIsViewer) {
-          sections += renderOrdSection(to, "Taker Order", false);
-          sections += renderOrdSection(mo, "Maker Order (counterparty)", true);
+          sections += renderOrdSection(to, takerLabel, false);
+          sections += renderOrdSection(mo, makerLabel + " (counterparty)", true);
         } else if (moIsViewer) {
-          sections += renderOrdSection(mo, "Maker Order", false);
-          sections += renderOrdSection(to, "Taker Order (counterparty)", true);
+          sections += renderOrdSection(mo, viewerMakerLabel, false);
+          sections += renderOrdSection(to, takerLabel + " (counterparty)", true);
         } else {
-          // Unknown — show both expanded
-          sections += renderOrdSection(mo, "Maker Order", false);
-          sections += renderOrdSection(to, "Taker Order", false);
+          sections += renderOrdSection(mo, makerLabel, false);
+          sections += renderOrdSection(to, takerLabel, false);
         }
       }
+    }
+
+    // Liquidation (26) / Deleverage (23) — collapsible risk snapshot
+    if ((t === 26 || t === 23) && ev.li) {
+      const li = ev.li;
+      const riskMkt = info.MarketIndex !== undefined ? info.MarketIndex : (ev.m !== undefined ? ev.m : ((ev.oe && ev.oe.m !== undefined) ? ev.oe.m : undefined));
+      const mktKey = String(riskMkt);
+      const fmtRisk = (raw) => {
+        if (raw === undefined || raw === null) return "—";
+        const v = parseFloat(raw) / 1e12;
+        return v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 }) + ' USDC';
+      };
+      let riskHtml = '<div class="tx-grid">';
+      // Position in the liquidated market
+      if (li.p) {
+        const posData = li.p[mktKey];
+        if (posData && posData.accp_p !== undefined) {
+          const ps = posData.accp_p;
+          riskHtml += txF("Position", (fmtSz(Math.abs(ps), riskMkt) || esc(Math.abs(ps))) + ' ' + (ps < 0 ? '<span class="pnl-negative">Short</span>' : '<span class="pnl-positive">Long</span>'), false, "Position size before liquidation in this market");
+        }
+        if (posData && posData.accp_imf !== undefined) riskHtml += txF("IMF", fmtImf(posData.accp_imf) || esc(posData.accp_imf), false, "Initial Margin Fraction — required margin % / max leverage");
+      }
+      // Per-market risk from irp (not top-level which can be 0 for cross)
+      const renderRiskBlock = (block, suffix) => {
+        if (!block) return;
+        const irp = block.irp && block.irp[mktKey];
+        if (irp) {
+          riskHtml += txF("Collateral " + suffix, fmtRisk(irp.ri_co), false, "Collateral allocated to this market position");
+          riskHtml += txF("TAV " + suffix, fmtRisk(irp.ri_tav), false, "Total Asset Value — collateral + unrealized PnL");
+          riskHtml += txF("IMR " + suffix, fmtRisk(irp.ri_imr), false, "Initial Margin Requirement — minimum to open/maintain position");
+          riskHtml += txF("MMR " + suffix, fmtRisk(irp.ri_mmr), false, "Maintenance Margin Requirement — liquidation threshold (TAV < MMR → liquidation)");
+        } else {
+          // Fallback to top-level
+          riskHtml += txF("Collateral " + suffix, fmtRisk(block.ri_co), false, "Account total collateral");
+          riskHtml += txF("TAV " + suffix, fmtRisk(block.ri_tav), false, "Total Asset Value");
+          riskHtml += txF("IMR " + suffix, fmtRisk(block.ri_imr), false, "Initial Margin Requirement");
+          riskHtml += txF("MMR " + suffix, fmtRisk(block.ri_mmr), false, "Maintenance Margin Requirement");
+        }
+      };
+      renderRiskBlock(li.rb, "(before)");
+      renderRiskBlock(li.ra, "(after)");
+      riskHtml += '</div>';
+      sections += wrapCollapsible("Risk Snapshot (" + (riskMkt !== undefined ? marketSymbol(riskMkt) : "?") + ")", riskHtml);
     }
 
     return sections;
@@ -2090,7 +2502,7 @@
           mark_price: m.mark_price,
           index_price: m.index_price,
           funding_rate: m.funding_rate,
-          next_funding_rate: m.next_funding_rate,
+          current_funding_rate: m.current_funding_rate,
           open_interest: m.open_interest,
           daily_volume: m.daily_quote_token_volume,
           funding_timestamp: m.funding_timestamp,
@@ -2222,15 +2634,26 @@
     hide(singleSection);
     hide(errorEl);
     hide(loadingEl);
+    hide(subLoadMore);
+    btnLoadAll.classList.add("hidden");
     subSearch.value = "";
     filterBalance.checked = false;
     filterActivated.checked = false;
     allSubAccounts = [];
     subAccountMap.clear();
     expandedIndexes.clear();
+    expandedDetailHeights.clear();
+    visibleRows = [];
+    visibleIndexMap.clear();
+    virtualEnabled = false;
+    lastWindowStart = lastWindowEnd = -1;
     expandGeneration = {};
     mainAccountObj = null;
     singleAccountData = null;
+    currentL1Address = null;
+    subNextCursor = null;
+    subAllLoaded = false;
+    isLoadingSubPage = false;
     unsubscribeMasterAccount();
     unsubscribeAllSubs();
     unsubscribeSingleAccount();
@@ -2238,8 +2661,211 @@
     updateUrlHash("");
   }
 
+  // ── Load-more helpers ──────────────────────────────────
+
+  function updateLoadMoreBar() {
+    // "Load All" button in header — don't touch while loading
+    if (!currentL1Address || subAllLoaded) {
+      btnLoadAll.classList.add("hidden");
+    } else if (subNextCursor && !isLoadingSubPage) {
+      btnLoadAll.classList.remove("hidden");
+      btnLoadAll.disabled = false;
+      btnLoadAll.textContent = "Load All";
+    }
+    // Bottom status text (shown during scroll loading)
+    if (!currentL1Address || subAllLoaded || hasActiveFilters() || !subNextCursor) {
+      hide(subLoadMore);
+    } else if (!isLoadingSubPage) {
+      subLoadStatus.textContent = allSubAccounts.length + " loaded";
+      show(subLoadMore);
+    }
+  }
+
+  function processLightAccounts(accounts) {
+    const newSubs = [];
+    let mainAcc = null;
+    for (const acc of accounts) {
+      if (acc.account_type === 0) {
+        mainAcc = acc;
+      } else if (acc.account_type === 1) {
+        acc._hasPositions = false; // light endpoint has no positions
+        acc._light = true;        // mark as lightweight (no TAV / positions)
+        enrichSortKeys(acc);       // precompute sort fields — critical for 50k+ lists
+        subAccountMap.set(String(acc.index), acc);
+        allSubAccounts.push(acc);
+        newSubs.push(acc);
+      }
+    }
+    return { mainAcc, newSubs };
+  }
+
+  async function loadSubAccountPage(l1Address, append) {
+    if (isLoadingSubPage || (append && subAllLoaded)) return;
+    isLoadingSubPage = true;
+
+    if (append) {
+      subLoadStatus.textContent = "Loading more…";
+      btnLoadAll.disabled = true;
+    }
+
+    try {
+      let url = "/api/accounts-light?l1_address=" + encodeURIComponent(l1Address);
+      if (append && subNextCursor) url += "&cursor=" + encodeURIComponent(subNextCursor);
+
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const detail = await resp.json().catch(() => ({}));
+        throw new Error(detail.detail || "HTTP " + resp.status);
+      }
+
+      const data = await resp.json();
+      const accounts = data.accounts || [];
+
+      if (accounts.length === 0 && !append) {
+        throw new Error("No accounts found for address " + l1Address);
+      }
+
+      subNextCursor = data.has_more ? data.next_cursor : null;
+      if (!data.has_more) subAllLoaded = true;
+
+      const { mainAcc, newSubs } = processLightAccounts(accounts);
+
+      if (!append) {
+        if (mainAcc) {
+          renderMainAccount(mainAcc, allSubAccounts);
+          subscribeMasterAccount(mainAcc.index);
+          updateL1HistoryIndex(l1Address, mainAcc.index);
+        }
+        subCount.textContent = allSubAccounts.length + (subAllLoaded ? "" : "+");
+        updateSortIndicators();
+        applyFilters();
+        show(subSection);
+      } else {
+        subCount.textContent = allSubAccounts.length + (subAllLoaded ? "" : "+");
+        // applyFilters is cheap now (precomputed sort keys + virtualized render).
+        applyFilters();
+        if (mainAccountObj) renderMainAccount(mainAccountObj, allSubAccounts);
+      }
+
+      updateLoadMoreBar();
+    } catch (err) {
+      if (!append) {
+        errorEl.textContent = err.message;
+        show(errorEl);
+      } else {
+        showToast("Error", err.message, "error");
+      }
+    } finally {
+      isLoadingSubPage = false;
+    }
+  }
+
+  async function loadAllSubs(l1Address) {
+    if (isLoadingSubPage || subAllLoaded) return;
+    isLoadingSubPage = true;
+    btnLoadAll.disabled = true;
+    show(subLoadMore);
+
+    const tStart = performance.now();
+    let totalFetch = 0;
+    let totalParse = 0;
+    let totalProcess = 0;
+    let totalRender = 0;
+    let bytesTotal = 0;
+
+    // Batch re-renders during Load All — otherwise each page triggers a full
+    // sort+render cycle (55+ calls on big addresses), which also resets the
+    // horizontal scrollLeft of any user-expanded positions table.
+    const RENDER_BATCH_MS = 400;
+    let lastApplyMs = 0;
+
+    try {
+      let pages = 0;
+      while (subNextCursor && !subAllLoaded) {
+        pages++;
+        btnLoadAll.textContent = "Loading… " + allSubAccounts.length;
+        subLoadStatus.textContent = "Page " + pages + " (" + allSubAccounts.length + " loaded)";
+
+        const url = "/api/accounts-light?l1_address=" + encodeURIComponent(l1Address) +
+          "&cursor=" + encodeURIComponent(subNextCursor);
+
+        const tFetch = performance.now();
+        const resp = await fetch(url);
+        if (!resp.ok) {
+          const detail = await resp.json().catch(() => ({}));
+          throw new Error(detail.detail || "HTTP " + resp.status);
+        }
+
+        const tText = performance.now();
+        const text = await resp.text();
+        bytesTotal += text.length;
+        const data = JSON.parse(text);
+        const tParse = performance.now();
+
+        const accounts = data.accounts || [];
+
+        subNextCursor = data.has_more ? data.next_cursor : null;
+        if (!data.has_more) subAllLoaded = true;
+
+        const { newSubs } = processLightAccounts(accounts);
+        const tProc = performance.now();
+
+        subCount.textContent = allSubAccounts.length + (subAllLoaded ? "" : "+");
+        // Throttle re-renders: apply every RENDER_BATCH_MS or at final page.
+        const nowMs = performance.now();
+        const doApply = subAllLoaded || !subNextCursor || (nowMs - lastApplyMs) > RENDER_BATCH_MS;
+        if (doApply) {
+          applyFilters();
+          lastApplyMs = nowMs;
+        }
+        const tRender = performance.now();
+
+        const fetchMs = tText - tFetch;
+        const parseMs = tParse - tText;
+        const procMs = tProc - tParse;
+        const renderMs = tRender - tProc;
+        totalFetch += fetchMs;
+        totalParse += parseMs;
+        totalProcess += procMs;
+        totalRender += renderMs;
+
+        console.log("[perf] page " + pages +
+          " accs=" + accounts.length +
+          " bytes=" + Math.round(text.length / 1024) + "KB" +
+          " fetch=" + fetchMs.toFixed(0) + "ms" +
+          " parse=" + parseMs.toFixed(0) + "ms" +
+          " proc=" + procMs.toFixed(0) + "ms" +
+          " render=" + renderMs.toFixed(0) + "ms" +
+          " totalSubs=" + allSubAccounts.length);
+      }
+
+      subAllLoaded = true;
+      subNextCursor = null;
+      subCount.textContent = allSubAccounts.length;
+      if (mainAccountObj) renderMainAccount(mainAccountObj, allSubAccounts);
+      updateLoadMoreBar();
+
+      const totalMs = performance.now() - tStart;
+      console.log("[perf] loadAllSubs DONE " +
+        "subs=" + allSubAccounts.length +
+        " totalMs=" + totalMs.toFixed(0) +
+        " mb=" + (bytesTotal / 1024 / 1024).toFixed(2) +
+        " fetch=" + totalFetch.toFixed(0) +
+        " parse=" + totalParse.toFixed(0) +
+        " process=" + totalProcess.toFixed(0) +
+        " render=" + totalRender.toFixed(0) +
+        (performance.memory ? " memMB=" + (performance.memory.usedJSHeapSize / 1024 / 1024).toFixed(1) : ""));
+    } catch (err) {
+      showToast("Error", err.message, "error");
+      updateLoadMoreBar();
+    } finally {
+      isLoadingSubPage = false;
+    }
+  }
+
   async function loadAddress(l1Address) {
     hide(mainSection); hide(subSection); hide(singleSection); hide(errorEl);
+    hide(subLoadMore);
     show(loadingEl);
     subSearch.value = "";
     filterBalance.checked = false;
@@ -2249,41 +2875,29 @@
     unsubscribeAllSubs();
     unsubscribeSingleAccount();
 
+    // Reset pagination state
+    allSubAccounts = [];
+    subAccountMap.clear();
+    expandedIndexes.clear();
+    expandedDetailHeights.clear();
+    visibleRows = [];
+    visibleIndexMap.clear();
+    virtualEnabled = false;
+    lastWindowStart = lastWindowEnd = -1;
+    currentL1Address = l1Address;
+    subNextCursor = null;
+    subAllLoaded = false;
+    isLoadingSubPage = false;
+
     try {
-      const resp = await fetch("/api/account?by=l1_address&value=" + encodeURIComponent(l1Address));
-      if (!resp.ok) {
-        const detail = await resp.json().catch(() => ({}));
-        throw new Error(detail.detail || "HTTP " + resp.status);
-      }
-
-      const data = await resp.json();
-      const accounts = data.accounts || [];
-      if (accounts.length === 0) throw new Error("No accounts found for address " + l1Address);
-
-      const main = accounts.find((a) => a.account_type === 0);
-      subAccountMap.clear();
-      allSubAccounts = accounts.filter((a) => a.account_type === 1).map((acc) => {
-        acc._hasPositions = hasRealPositions(acc.positions);
-        acc._cachedDetail = { accounts: [acc] };
-        subAccountMap.set(String(acc.index), acc);
-        return acc;
-      });
-
-      if (main) {
-        renderMainAccount(main, allSubAccounts);
-        subscribeMasterAccount(main.index);
-        updateL1HistoryIndex(l1Address, main.index);
-      }
-
-      subCount.textContent = allSubAccounts.length;
-      updateSortIndicators();
-      applyFilters();
-      show(subSection);
-    } catch (err) {
-      errorEl.textContent = err.message;
-      show(errorEl);
+      await loadSubAccountPage(l1Address, false);
     } finally {
       hide(loadingEl);
+    }
+
+    // Auto-load remaining pages in background
+    if (!subAllLoaded && subNextCursor) {
+      loadAllSubs(l1Address);
     }
   }
 
@@ -2519,18 +3133,33 @@
     const colSpan = expandedColSpan;
     const sub = findSub(index);
 
+    // Helper: insert / refresh the detail row — differs between virtual and
+    // full modes. In virtual mode we re-render the window so spacer math
+    // accounts for the newly-visible detail row.
+    const placeDetailRow = (htmlOrInline, isLoading) => {
+      if (virtualEnabled) {
+        renderVirtualWindow();
+      } else {
+        const existing = getDetailRow(index);
+        if (existing) {
+          existing.outerHTML = htmlOrInline;
+        } else {
+          const tmp = document.createElement("tr");
+          tmp.className = "detail-row-tmp";
+          const freshRow = getSubRow(index) || row;
+          freshRow.after(tmp);
+          tmp.outerHTML = htmlOrInline;
+        }
+      }
+    };
+
     if (sub && sub._cachedDetail) {
-      const tmp = document.createElement("tr");
-      tmp.className = "detail-row-tmp";
-      row.after(tmp);
-      tmp.outerHTML = renderDetailRow(sub._cachedDetail, colSpan, index);
+      placeDetailRow(renderDetailRow(sub._cachedDetail, colSpan, index), false);
       subscribeSubAccount(index);
     } else {
-      const loadingRow = document.createElement("tr");
-      loadingRow.className = "detail-row";
-      loadingRow.setAttribute("data-detail-for", index);
-      loadingRow.innerHTML = '<td colspan="' + colSpan + '"><div class="detail-panel detail-loading"><div class="spinner"></div> Loading...</div></td>';
-      row.after(loadingRow);
+      const loadingHtml = '<tr class="detail-row" data-detail-for="' + esc(index) + '">' +
+        '<td colspan="' + colSpan + '"><div class="detail-panel detail-loading"><div class="spinner"></div> Loading...</div></td></tr>';
+      placeDetailRow(loadingHtml, true);
 
       try {
         const resp = await fetch("/api/account?by=index&value=" + encodeURIComponent(index));
@@ -2540,42 +3169,52 @@
         // Race condition guard: check if expand is still current
         if (!expandedIndexes.has(index) || expandGeneration[index] !== gen) return;
 
-        loadingRow.outerHTML = renderDetailRow(data, colSpan, index);
-
         const detailAcc = data.accounts && data.accounts[0];
         if (sub && detailAcc) {
           sub._cachedDetail = data;
           sub._hasPositions = hasRealPositions(detailAcc.positions);
+          enrichSortKeys(sub);
           updateSubRowCells(index, sub);
         }
 
+        placeDetailRow(renderDetailRow(data, colSpan, index), false);
         subscribeSubAccount(index);
       } catch (err) {
         if (!expandedIndexes.has(index) || expandGeneration[index] !== gen) return;
-        loadingRow.innerHTML = '<td colspan="' + colSpan + '"><div class="detail-panel detail-error">Failed to load account details</div></td>';
+        const errHtml = '<tr class="detail-row" data-detail-for="' + esc(index) + '">' +
+          '<td colspan="' + colSpan + '"><div class="detail-panel detail-error">Failed to load account details</div></td></tr>';
+        placeDetailRow(errHtml, false);
       }
     }
   });
 
   // Sort headers
-  document.querySelector("#sub-accounts thead").addEventListener("click", (e) => {
+  document.querySelector("#sub-table thead").addEventListener("click", (e) => {
     const th = e.target.closest("th.sortable");
     if (!th) return;
     const key = th.dataset.key;
     if (sortKey === key) { sortAsc = !sortAsc; }
     else { sortKey = key; sortAsc = true; }
+    const t0 = performance.now();
+    console.log("[perf] SORT CLICK key=" + key + " asc=" + sortAsc + " subs=" + allSubAccounts.length);
     updateSortIndicators();
     applyFilters();
+    const dt = performance.now() - t0;
+    console.log("[perf] SORT CLICK done " + dt.toFixed(0) + "ms");
   });
 
   // Filters (debounce text input for large account lists)
   let _filterTimer = null;
   subSearch.addEventListener("input", () => {
     clearTimeout(_filterTimer);
-    _filterTimer = setTimeout(applyFilters, 120);
+    _filterTimer = setTimeout(applyFilters, 200);
   });
   filterBalance.addEventListener("change", applyFilters);
   filterActivated.addEventListener("change", applyFilters);
+
+  // Virtualization: re-render window on scroll/resize (rAF-throttled).
+  window.addEventListener("scroll", onVirtualScroll, { passive: true });
+  window.addEventListener("resize", onVirtualScroll, { passive: true });
 
 
   // Export modal
@@ -2786,6 +3425,19 @@
 
   window.addEventListener("scroll", updateScrollBtn, { passive: true });
   logsContent.addEventListener("scroll", updateScrollBtn, { passive: true });
+
+  // ── Sub-account infinite scroll ───────────────────────────
+  window.addEventListener("scroll", () => {
+    if (!currentL1Address || subAllLoaded || isLoadingSubPage || !subNextCursor) return;
+    if (hasActiveFilters()) return; // don't auto-load when filtering
+    const nearBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - 300);
+    if (nearBottom) loadSubAccountPage(currentL1Address, true);
+  }, { passive: true });
+
+  btnLoadAll.addEventListener("click", () => {
+    if (!currentL1Address || subAllLoaded) return;
+    loadAllSubs(currentL1Address);
+  });
 
   scrollBtn.addEventListener("click", () => {
     const logsOpen = !logsModal.classList.contains("hidden");

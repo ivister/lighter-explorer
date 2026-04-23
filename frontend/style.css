@@ -646,10 +646,49 @@ tbody tr:not(.sub-row):not(.detail-row):hover {
 tr.sub-row {
   cursor: pointer;
   transition: background 0.15s;
+  /* Fixed height (must match ROW_H in app.js) — required for virtualized
+     sub-account table scroll math on 50k+ row lists. */
+  height: 36px;
+}
+
+tr.sub-row > td {
+  height: 36px;
+  box-sizing: border-box;
+  /* Keep content centered vertically even at fixed height. */
+  vertical-align: middle;
 }
 
 tr.sub-row:hover {
   background: rgba(88, 166, 255, 0.06);
+}
+
+/* Virtualization spacer rows — purely layout, no interactivity. */
+tr.v-spacer {
+  pointer-events: none;
+}
+tr.v-spacer > td {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+/* Sub-accounts table uses fixed column widths so columns don't reflow when
+   the virtual window slides through rows with differing content lengths.
+   Scoped to #sub-table only so nested tables (positions, logs) are unaffected. */
+#sub-table {
+  table-layout: fixed;
+}
+#sub-table > thead > tr > th:nth-child(1) { width: 14%; }
+#sub-table > thead > tr > th:nth-child(2) { width: 22%; }
+#sub-table > thead > tr > th:nth-child(3) { width: 20%; }
+#sub-table > thead > tr > th:nth-child(4) { width: 16%; }
+#sub-table > thead > tr > th:nth-child(5) { width: 14%; }
+#sub-table > thead > tr > th:nth-child(6) { width: 14%; }
+/* Truncate overly long cell content in sub-rows only — detail rows contain
+   nested tables whose cells must render naturally. */
+#sub-table > tbody > tr.sub-row > td {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 tr.expanded {
@@ -1280,6 +1319,11 @@ tr.log-row[data-tx]:hover { background: var(--hover); }
   padding-right: 1rem;
   width: 1%;          /* shrink-to-content */
 }
+.tx-grid .label[title] {
+  cursor: help;
+  text-decoration: underline dotted var(--text-muted);
+  text-underline-offset: 2px;
+}
 .tx-grid .value {
   font-weight: 500;
   text-align: right;
@@ -1537,6 +1581,43 @@ tr.log-row[data-tx]:hover { background: var(--hover); }
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+}
+
+/* ── Load-more (sub-account pagination) ──────────── */
+
+.load-more-status {
+  text-align: center;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.load-status {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.btn-load-all {
+  padding: 0.15rem 0.65rem;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  vertical-align: middle;
+  margin-left: 0.3rem;
+  transition: background 0.15s, color 0.15s;
+}
+
+.btn-load-all:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.btn-load-all:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 /* ── Responsive / Mobile ──────────────────────────────── */

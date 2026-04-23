@@ -71,7 +71,7 @@
     <!-- Sub-accounts table -->
     <section id="sub-accounts" class="card hidden">
       <div class="section-header">
-        <h2>Sub-Accounts <span id="sub-count" class="count-badge"></span></h2>
+        <h2>Sub-Accounts <span id="sub-count" class="count-badge"></span> <button type="button" id="btn-load-all" class="btn-load-all hidden">Load All</button></h2>
         <div class="filters">
           <input id="sub-search" type="text" placeholder="Search by index..." />
           <div class="checkbox-group">
@@ -86,7 +86,7 @@
         </div>
       </div>
       <div class="table-wrap">
-        <table>
+        <table id="sub-table">
           <thead>
             <tr>
               <th class="sortable" data-key="index">Index</th>
@@ -99,6 +99,9 @@
           </thead>
           <tbody id="sub-tbody"></tbody>
         </table>
+      </div>
+      <div id="sub-load-more" class="load-more-status hidden">
+        <span id="sub-load-status" class="load-status"></span>
       </div>
       <p id="no-results" class="hidden">No sub-accounts match your search.</p>
     </section>
